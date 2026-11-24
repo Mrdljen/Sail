@@ -1,0 +1,6 @@
+{
+  "name": "Meridian Passage",
+  "description": "A solo 3D round-the-world sailing simulator with wind-to-sail physics, squall reefing, interactive cockpit and cabin systems, tidal anchoring, dockside repairs, and the Trade-Wind route.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
