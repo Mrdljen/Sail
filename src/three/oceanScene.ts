@@ -189,7 +189,7 @@ export class SailingSceneController {
   private lastCamKey = '';
   private camPosCurrent = new THREE.Vector3(-12, 6, 10);
   private camLookCurrent = new THREE.Vector3(0, 2, 0);
-  private clock = new THREE.Clock();
+  private lastFrameMs = performance.now();
   private elapsedSec = 0;
   private frameId = 0;
   private disposed = false;
@@ -260,12 +260,13 @@ export class SailingSceneController {
     scene.add(this.boat.root);
 
     // Dynamic PBR Ocean Plane using MeshStandardMaterial + onBeforeCompile Gerstner Waves
-    const oceanGeo = new THREE.PlaneGeometry(2400, 2400, this.isSoftwareGl ? 64 : 96, this.isSoftwareGl ? 64 : 96);
+    const oceanGeo = new THREE.PlaneGeometry(1100, 1100, this.isSoftwareGl ? 64 : 96, this.isSoftwareGl ? 64 : 96);
     oceanGeo.rotateX(-Math.PI / 2);
     const oceanMat = new THREE.MeshStandardMaterial({
-      color: 0x063454,
-      roughness: 0.42,
-      metalness: 0.06,
+      color: 0xffffff,
+      roughness: 0.34,
+      metalness: 0.02,
+      envMapIntensity: 0.32,
     });
     const uniforms = this.oceanUniforms;
     oceanMat.onBeforeCompile = (shader) => {
@@ -283,8 +284,8 @@ export class SailingSceneController {
         `
         #include <begin_vertex>
         vec2 wp = transformed.xz + uOffset;
-        float w1 = sin(wp.x * 0.085 + uTime * 1.35) * cos(wp.y * 0.065 + uTime * 0.95);
-        float w2 = sin((wp.x * 0.15 - wp.y * 0.12) + uTime * 1.9) * 0.45;
+        float w1 = sin(wp.x * 0.09 + uTime * 1.35) * cos(wp.y * 0.07 + uTime * 0.95);
+        float w2 = sin((wp.x * 0.16 - wp.y * 0.13) + uTime * 1.9) * 0.45;
         float h = (w1 + w2) * 0.55 * uWaveHeight;
         transformed.y += h;
         vWaveCrest = clamp((h / max(0.3, uWaveHeight)) * 0.5 + 0.5, 0.0, 1.0);
@@ -297,12 +298,12 @@ export class SailingSceneController {
         '#include <color_fragment>',
         `
         #include <color_fragment>
-        vec3 deepCol = vec3(0.014, 0.095, 0.20);
-        vec3 crestCol = vec3(0.035, 0.24, 0.37);
-        vec3 foamCol = vec3(0.86, 0.94, 0.99);
+        vec3 deepCol = vec3(0.012, 0.075, 0.175);
+        vec3 crestCol = vec3(0.025, 0.185, 0.31);
+        vec3 foamCol = vec3(0.84, 0.93, 0.98);
         diffuseColor.rgb = mix(deepCol, crestCol, vWaveCrest);
-        float foamMask = smoothstep(0.76, 0.96, vWaveCrest);
-        diffuseColor.rgb = mix(diffuseColor.rgb, foamCol, foamMask * 0.65);
+        float foamMask = smoothstep(0.83, 0.97, vWaveCrest);
+        diffuseColor.rgb = mix(diffuseColor.rgb, foamCol, foamMask * 0.52);
         `,
       );
     };
@@ -634,10 +635,13 @@ export class SailingSceneController {
   }
 
   private startLoop(): void {
+    this.lastFrameMs = performance.now();
     const tick = () => {
       if (this.disposed) return;
-      const rawDt = this.clock.getDelta();
-      const dt = Math.min(rawDt, 0.05);
+      const nowMs = performance.now();
+      const rawDt = (nowMs - this.lastFrameMs) / 1000;
+      this.lastFrameMs = nowMs;
+      const dt = Math.min(Math.max(rawDt, 0.001), 0.05);
       this.elapsedSec += dt;
 
       const screen = this.callbacks.getScreenState();

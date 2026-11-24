@@ -314,11 +314,19 @@ export function buildSailboatModel(
   hullMesh.receiveShadow = !isSoftwareGl;
   hullPivot.add(hullMesh);
 
-  // Transom closure
-  const transomGeo = new THREE.BoxGeometry(B * 0.62, hullDepth * 0.72, 0.14);
+  // Tapered stern transom closure matching hull bilge curve (no protruding box corners)
+  const transomShape = new THREE.Shape();
+  const tHalfTop = B * 0.31;
+  const tHalfBot = B * 0.16;
+  transomShape.moveTo(-tHalfTop, 0.42 * scaleFactor);
+  transomShape.lineTo(tHalfTop, 0.42 * scaleFactor);
+  transomShape.quadraticCurveTo(tHalfTop * 0.85, 0.05 * scaleFactor, tHalfBot, -0.22 * scaleFactor);
+  transomShape.lineTo(-tHalfBot, -0.22 * scaleFactor);
+  transomShape.quadraticCurveTo(-tHalfTop * 0.85, 0.05 * scaleFactor, -tHalfTop, 0.42 * scaleFactor);
+  const transomGeo = new THREE.ExtrudeGeometry(transomShape, { depth: 0.1 * scaleFactor, bevelEnabled: false });
   disposables.push(transomGeo);
   const transomMesh = new THREE.Mesh(transomGeo, bootStripeMat);
-  transomMesh.position.set(0, 0.12 * scaleFactor, L * 0.49);
+  transomMesh.position.set(0, 0, L * 0.47);
   hullPivot.add(transomMesh);
 
   // Underwater Keel & Rudder Blade
@@ -733,10 +741,11 @@ export function syncBoatVisuals(
   state: SimulationState,
   elapsedSec: number,
 ): void {
-  // Heading & Heel
+  // Heading & Heel (pitch modulated by Virtual Sailor NG pitchDampening)
   boat.root.rotation.y = -(state.headingDeg * Math.PI) / 180;
   const heelRad = (state.heelDeg * Math.PI) / 180;
-  const wavePitch = Math.sin(elapsedSec * 1.4) * (0.015 + state.weather.waveHeightM * 0.012);
+  const pitchDamp = Math.max(0.5, state.vesselCfg?.pitchDampening ?? 1.0);
+  const wavePitch = Math.sin(elapsedSec * 1.4) * ((0.015 + state.weather.waveHeightM * 0.012) / pitchDamp);
   const waveRoll = Math.cos(elapsedSec * 1.1) * (0.012 + state.weather.waveHeightM * 0.01);
   boat.hullPivot.rotation.z = heelRad + waveRoll;
   boat.hullPivot.rotation.x = wavePitch;
@@ -753,16 +762,16 @@ export function syncBoatVisuals(
   // Compass card stays aligned to North
   boat.compassCardMesh.rotation.z = (state.headingDeg * Math.PI) / 180;
 
-  // Boom & Mainsail angle based on Apparent Wind side and Mainsheet %
-  const windSide = Math.sign(state.apparentWindAngleDeg || -1); // wind from port (-1) -> boom swings stbd (+1)
-  const maxBoomOut = ((100 - state.mainsheetPct) / 100) * (Math.PI * 0.42) + 0.06;
+  // Boom & Mainsail angle driven directly by foil solver's boomSide & boomAngleDeg
+  const boomSide = state.boomSide ?? -Math.sign(state.apparentWindAngleDeg || -1);
+  const boomRad = ((state.boomAngleDeg ?? (boomSide * 28)) * Math.PI) / 180;
   const luffFlutter = state.isLuffing ? Math.sin(elapsedSec * 18) * 0.09 : 0;
-  boat.boomPivot.rotation.y = -windSide * maxBoomOut + luffFlutter;
+  boat.boomPivot.rotation.y = boomRad + luffFlutter;
 
-  // Reefing shrinks mainsail vertically & thickens camber slightly
+  // Reefing shrinks mainsail vertically & reflects boom side camber
   const reefScaleY = state.reefLevel === 0 ? 1.0 : state.reefLevel === 1 ? 0.73 : 0.48;
   boat.mainsailMesh.scale.set(
-    -windSide * (0.7 + (1 - state.mainsheetPct / 100) * 0.65),
+    boomSide * (0.7 + (1 - state.mainsheetPct / 100) * 0.65),
     reefScaleY,
     1.0,
   );
@@ -771,8 +780,8 @@ export function syncBoatVisuals(
   boat.jibMesh.visible = state.jibDeployed;
   if (state.jibDeployed) {
     const jibOut = ((100 - state.jibsheetPct) / 100) * 0.48 + 0.05;
-    boat.jibMesh.rotation.y = -windSide * jibOut + luffFlutter * 0.7;
-    boat.jibMesh.scale.x = -windSide * (0.75 + (1 - state.jibsheetPct / 100) * 0.5);
+    boat.jibMesh.rotation.y = boomSide * jibOut + luffFlutter * 0.7;
+    boat.jibMesh.scale.x = boomSide * (0.75 + (1 - state.jibsheetPct / 100) * 0.5);
   }
 
   // Windvane paddle indicator
@@ -795,7 +804,6 @@ export function syncBoatVisuals(
     mat.color.setHex(isOn ? 0x10b981 : 0x475569);
     mat.emissive.setHex(isOn ? 0x10b981 : 0x000000);
     mat.emissiveIntensity = isOn ? 0.85 : 0.0;
-    mesh.position.z = mesh.position.z;
     mesh.rotation.x = isOn ? -0.25 : 0.25;
   });
 }

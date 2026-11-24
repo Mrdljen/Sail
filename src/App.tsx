@@ -6,15 +6,19 @@ import { StatusModal } from './components/StatusModal';
 import { TitleScreen } from './components/TitleScreen';
 import { WorldChartModal } from './components/WorldChartModal';
 import {
+  acceptCharterContract,
   applySparePartRepair,
   buyChandleryItem,
   clamp,
   createInitialSimulationState,
   deployOrRaiseAnchor,
   normalizeAngle180,
+  resetVesselCfg,
+  settlePassageCompletion,
   simulateWatchSleep,
   stepSimulation,
   switchOrPurchaseBoat,
+  updateVesselCfg,
 } from './sim/physics';
 import type { InteractiveAction } from './three/boatBuilder';
 import { SailingSceneController } from './three/oceanScene';
@@ -36,9 +40,14 @@ function loadInitialState(): SimulationState {
     if (raw) {
       const parsed = JSON.parse(raw) as Partial<SimulationState>;
       if (parsed && parsed.boatId && parsed.passage && parsed.weather) {
+        const base = createInitialSimulationState(parsed.boatId);
         return {
-          ...createInitialSimulationState(parsed.boatId),
+          ...base,
           ...parsed,
+          vesselCfg: { ...base.vesselCfg, ...(parsed.vesselCfg ?? {}) },
+          inventory: { ...base.inventory, ...(parsed.inventory ?? {}) },
+          weather: { ...base.weather, ...(parsed.weather ?? {}) },
+          passage: { ...base.passage, ...(parsed.passage ?? {}) },
         };
       }
     }
@@ -390,24 +399,8 @@ export default function App() {
   );
 
   const handleCompletePassage = useCallback(() => {
-    const prev = simRef.current;
-    const rewardCoins = Math.round(450 + prev.passage.totalDistanceNm * 4);
-    const updated: SimulationState = {
-      ...prev,
-      inventory: {
-        ...prev.inventory,
-        coins: prev.inventory.coins + rewardCoins,
-      },
-      passage: {
-        ...prev.passage,
-        voyageComplete: true,
-        visitedHubIds: Array.from(
-          new Set([...prev.passage.visitedHubIds, prev.passage.toHubId]),
-        ),
-      },
-      lastLogEntry: `Logged landfall at ${prev.passage.toName}. Earned ${rewardCoins} Cr harbor bounty.`,
-    };
-    commitSim(updated);
+    const { state } = settlePassageCompletion(simRef.current);
+    commitSim(state);
     setScreenState('gameover');
   }, [commitSim]);
 
@@ -580,6 +573,17 @@ export default function App() {
         onSwitchBoat={(boat) => {
           audioRef.current?.playSwitchClick();
           commitSim(switchOrPurchaseBoat(simRef.current, boat));
+        }}
+        onAcceptContract={(contract) => {
+          audioRef.current?.playSwitchClick();
+          commitSim(acceptCharterContract(simRef.current, contract));
+        }}
+        onUpdateVesselCfg={(patch) => {
+          commitSim(updateVesselCfg(simRef.current, patch));
+        }}
+        onResetVesselCfg={() => {
+          audioRef.current?.playSwitchClick();
+          commitSim(resetVesselCfg(simRef.current));
         }}
       />
     </div>

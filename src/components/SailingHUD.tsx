@@ -22,6 +22,7 @@ import type {
   SimulationState,
 } from '../types/sailing';
 import { BOAT_SPECS } from '../sim/boats';
+import { buildNmeaSentences } from '../sim/nmea';
 import { getOptimalSheetPct } from '../sim/physics';
 
 export type DockTab = 'helm' | 'weather' | 'cabin' | 'anchor';
@@ -105,9 +106,11 @@ export function SailingHUD({
               </div>
             </div>
             <div>
-              <div className="text-[10px] uppercase tracking-wider text-slate-400">Speed</div>
+              <div className="text-[10px] uppercase tracking-wider text-slate-400">STW / SOG</div>
               <div className="font-mono-tabular text-base font-semibold text-amber-400">
-                {sim.electrical.instruments ? `${sim.boatSpeedKts.toFixed(1)} kt` : '--'}
+                {sim.electrical.instruments
+                  ? `${sim.boatSpeedKts.toFixed(1)} / ${(sim.sogKts ?? sim.boatSpeedKts).toFixed(1)} kt`
+                  : '--'}
               </div>
             </div>
             <div>
@@ -120,8 +123,12 @@ export function SailingHUD({
             </div>
             <div>
               <div className="text-[10px] uppercase tracking-wider text-slate-400">Depth</div>
-              <div className="font-mono-tabular text-sm font-medium text-slate-200">
-                {sim.electrical.instruments ? `${Math.round(sim.passage.depthM)} m` : '--'}
+              <div
+                className={`font-mono-tabular text-sm font-medium ${
+                  sim.passage.channelHazardWarning ? 'text-red-400' : 'text-slate-200'
+                }`}
+              >
+                {sim.electrical.instruments ? `${sim.passage.depthM.toFixed(1)} m` : '--'}
               </div>
             </div>
             <div>
@@ -281,7 +288,13 @@ export function SailingHUD({
               </div>
 
               <div className="text-[11px] text-slate-400 font-mono-tabular flex items-center gap-3">
-                <span>{sim.pointOfSail}</span>
+                <span>
+                  {sim.pointOfSail}
+                  {sim.maneuverState && sim.maneuverState !== 'sailing'
+                    ? ` · ${sim.maneuverState.toUpperCase()}`
+                    : ''}
+                </span>
+                <span>AoA {Math.round(sim.angleOfAttackDeg ?? 20)}° · Lift {sim.sailLiftN ?? 0}N</span>
                 <span>Heel {Math.abs(Math.round(sim.heelDeg))}°</span>
                 <span>Bat {batteryPct}%</span>
               </div>
@@ -533,44 +546,67 @@ export function SailingHUD({
                     </div>
                   </div>
 
-                  {/* Solar, Battery & Fridge Galley Telemetry */}
-                  <div className="md:col-span-6 grid grid-cols-3 gap-2.5">
-                    <div className="bg-slate-900/80 border border-slate-800 rounded-lg p-2.5">
-                      <div className="flex items-center gap-1 text-[11px] text-slate-400">
-                        <Sun className="w-3.5 h-3.5 text-amber-400" aria-hidden="true" />
-                        <span>Solar / Load</span>
+                  {/* Solar, Battery, Fridge & Live NMEA 0183 Telemetry */}
+                  <div className="md:col-span-6 space-y-2">
+                    <div className="grid grid-cols-3 gap-2">
+                      <div className="bg-slate-900/80 border border-slate-800 rounded-lg p-2">
+                        <div className="flex items-center gap-1 text-[11px] text-slate-400">
+                          <Sun className="w-3.5 h-3.5 text-amber-400" aria-hidden="true" />
+                          <span>Solar / Load</span>
+                        </div>
+                        <div className="font-mono-tabular text-xs font-semibold text-slate-100 mt-0.5">
+                          +{sim.electrical.solarWatts}W / -{sim.electrical.drawWatts}W
+                        </div>
+                        <div className="font-mono-tabular text-[11px] text-slate-400">
+                          {sim.electrical.voltage.toFixed(1)}V · {Math.round(sim.electrical.batteryAh)}Ah
+                        </div>
                       </div>
-                      <div className="font-mono-tabular text-sm font-semibold text-slate-100 mt-1">
-                        +{sim.electrical.solarWatts}W / -{sim.electrical.drawWatts}W
+
+                      <div className="bg-slate-900/80 border border-slate-800 rounded-lg p-2">
+                        <div className="text-[11px] text-slate-400">Galley Fridge</div>
+                        <div
+                          className={`font-mono-tabular text-xs font-semibold mt-0.5 ${
+                            sim.electrical.fridgeTempC > 9 ? 'text-red-400' : 'text-sky-300'
+                          }`}
+                        >
+                          {sim.electrical.fridgeTempC.toFixed(1)}°C
+                        </div>
+                        <div className="font-mono-tabular text-[11px] text-slate-400">
+                          {sim.electrical.provisionsDays.toFixed(1)}d · {Math.round(sim.electrical.waterLiters)}L
+                        </div>
                       </div>
-                      <div className="font-mono-tabular text-[11px] text-slate-400">
-                        {sim.electrical.voltage.toFixed(1)}V · {Math.round(sim.electrical.batteryAh)}Ah
+
+                      <div className="bg-slate-900/80 border border-slate-800 rounded-lg p-2">
+                        <div className="text-[11px] text-slate-400">Rig & Hull</div>
+                        <div className="font-mono-tabular text-xs font-semibold text-slate-100 mt-0.5">
+                          Main {Math.round(sim.wear.mainsail)}%
+                        </div>
+                        <div className="font-mono-tabular text-[11px] text-slate-400">
+                          Rig {Math.round(sim.wear.rigging)}% · Hull {Math.round(sim.wear.hull)}%
+                        </div>
                       </div>
                     </div>
 
-                    <div className="bg-slate-900/80 border border-slate-800 rounded-lg p-2.5">
-                      <div className="text-[11px] text-slate-400">Galley Fridge</div>
-                      <div
-                        className={`font-mono-tabular text-sm font-semibold mt-1 ${
-                          sim.electrical.fridgeTempC > 9 ? 'text-red-400' : 'text-sky-300'
-                        }`}
-                      >
-                        {sim.electrical.fridgeTempC.toFixed(1)}°C
-                      </div>
-                      <div className="font-mono-tabular text-[11px] text-slate-400">
-                        {sim.electrical.provisionsDays.toFixed(1)}d food · {Math.round(sim.electrical.waterLiters)}L
-                      </div>
-                    </div>
-
-                    <div className="bg-slate-900/80 border border-slate-800 rounded-lg p-2.5">
-                      <div className="text-[11px] text-slate-400">Rig & Sail Wear</div>
-                      <div className="font-mono-tabular text-sm font-semibold text-slate-100 mt-1">
-                        Main {Math.round(sim.wear.mainsail)}%
-                      </div>
-                      <div className="font-mono-tabular text-[11px] text-slate-400">
-                        Rig {Math.round(sim.wear.rigging)}% · Hull {Math.round(sim.wear.hull)}%
-                      </div>
-                    </div>
+                    {/* NMEA 0183 Bus Readout */}
+                    {(() => {
+                      if (!sim.electrical.instruments) {
+                        return (
+                          <div className="bg-slate-900/70 border border-slate-800 rounded-lg px-2.5 py-1.5 font-mono-tabular text-[10px] text-slate-500">
+                            NMEA 0183 BUS: Switch on Instruments breaker for live GPS/Wind/Depth feed.
+                          </div>
+                        );
+                      }
+                      const nmea = buildNmeaSentences(sim);
+                      return (
+                        <div className="bg-slate-900/90 border border-slate-800 rounded-lg px-2.5 py-1.5 font-mono-tabular text-[10px] text-emerald-300/90 leading-snug">
+                          <div className="text-slate-400 mb-0.5">
+                            NMEA 0183 · {nmea.latStr} {nmea.lonStr} · COG {Math.round(sim.cogDeg ?? sim.headingDeg)}°
+                          </div>
+                          <div className="truncate">{nmea.gprmc}</div>
+                          <div className="truncate text-sky-300/90">{nmea.iimwv} · {nmea.iidpt}</div>
+                        </div>
+                      );
+                    })()}
                   </div>
                 </div>
               )}

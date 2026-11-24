@@ -18,6 +18,45 @@ export type PointOfSail =
   | 'Broad Reach'
   | 'Running';
 
+export type TackSide = 'port' | 'starboard';
+
+export type ManeuverState =
+  | 'sailing'
+  | 'in-irons'
+  | 'tacking'
+  | 'gybing'
+  | 'by-the-lee';
+
+/**
+ * Virtual Sailor NG-inspired moddable boat.cfg / elements.cfg physical surface tuning
+ */
+export interface VesselCfgParams {
+  boatLengthM: number;
+  massKg: number;
+  sailAreaM2: number;
+  jibAreaM2: number;
+  keelAreaM2: number;
+  rudderAreaM2: number;
+  wingSurDragM2: number; // [wing_sur] hydrodynamic skin & hull drag area
+  stabilityBody: number; // hull form righting coefficient
+  stabilitySails: number; // heeling moment lever arm
+  pitchDampening: number;
+  dailyUpkeepCr: number; // Ship Happens daily running & insurance cost
+}
+
+export interface CharterContract {
+  id: string;
+  title: string;
+  cargoType: string;
+  fromHubId: string;
+  toHubId: string;
+  toName: string;
+  distanceNm: number;
+  rewardCr: number;
+  deadlineHours: number;
+  fragile: boolean;
+}
+
 export interface BoatSpec {
   id: BoatId;
   name: string;
@@ -41,6 +80,7 @@ export interface BoatSpec {
   hasWheel: boolean;
   hasWindvane: boolean;
   description: string;
+  defaultCfg: VesselCfgParams;
 }
 
 export interface ElectricalState {
@@ -85,6 +125,9 @@ export interface ChandleryItem {
 export interface InventoryState {
   coins: number;
   parts: Record<string, number>; // itemId -> count
+  activeContract: CharterContract | null;
+  totalRunningCostsCr: number;
+  totalChartersCompleted: number;
 }
 
 export interface AnchorState {
@@ -111,6 +154,8 @@ export interface WeatherState {
   barometerHpa: number; // 1020 normal -> 998 squall
   barometerTrend: 'Steady' | 'Falling Rapidly' | 'Rising';
   waveHeightM: number;
+  oceanCurrentDirDeg: number; // direction surface current sets TOWARD
+  oceanCurrentKts: number;
   cloudCover: number; // 0 - 1
   rainIntensity: number; // 0 - 1
   timeOfDayHours: number; // 0 - 24
@@ -152,20 +197,33 @@ export interface PassageState {
   voyageComplete: boolean;
   visitedHubIds: string[];
   monthOfYear: number; // 1-12 for cyclone window check
+  channelHazardWarning: boolean;
+  groundingCount: number;
+  upkeepChargedDays: number;
 }
 
 export interface SimulationState {
   boatId: BoatId;
+  vesselCfg: VesselCfgParams;
   simRealism: number; // 0 = Arcade, 1 = Full Simulation
   headingDeg: number; // 0 = North, 90 = East
+  cogDeg: number; // Course Over Ground (deg)
   rudderAngleDeg: number; // -35 to +35
-  boatSpeedKts: number;
+  boatSpeedKts: number; // Speed Through Water (STW)
+  sogKts: number; // Speed Over Ground (SOG)
   leewayDeg: number;
   heelDeg: number; // positive = heeling starboard
   pitchDeg: number;
   apparentWindAngleDeg: number; // -180 to +180 relative to bow
   apparentWindSpeedKts: number;
   pointOfSail: PointOfSail;
+  tackSide: TackSide;
+  boomSide: -1 | 1; // -1 = boom out to port, +1 = boom out to starboard
+  boomAngleDeg: number; // signed boom swing relative to centerline
+  maneuverState: ManeuverState;
+  angleOfAttackDeg: number; // live aerodynamic AoA on mainsail foil
+  sailLiftN: number;
+  sailDragN: number;
   mainsheetPct: number; // 0 (eased/luffing) to 100 (strapped)
   jibsheetPct: number; // 0 to 100
   jibDeployed: boolean;

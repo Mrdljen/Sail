@@ -1,16 +1,23 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  acceptCharterContract,
   applySparePartRepair,
   buyChandleryItem,
   computeApparentWind,
+  computeDepthAtPassage,
   computeSailForces,
   createInitialSimulationState,
   deployOrRaiseAnchor,
+  settlePassageCompletion,
   simulateWatchSleep,
   stepSimulation,
   updateAnchorAndTide,
+  updateVesselCfg,
 } from './physics';
+import { generatePortContracts } from './boats';
+import { evaluateFoilCoefficients } from './foilPhysics';
+import { buildNmeaSentences } from './nmea';
 import { generateIntermediateAnchorages, HANDCRAFTED_HUBS } from './worldHubs';
 
 test('apparent wind rotates forward and increases when sailing upwind vs running', () => {
@@ -40,6 +47,23 @@ test('Reefing mainsail in a 32 kt squall reduces heel angle and sail wear', () =
 
   assert.ok(Math.abs(reefed2.targetHeelDeg) < Math.abs(fullMain.targetHeelDeg), 'Reef 2 must lower heel');
   assert.equal(fullMain.isOverpowered, true);
+});
+
+test('Foil aerodynamics peak lift near attached AoA and Tiller state machine catches by-the-lee gybe', () => {
+  const attached = evaluateFoilCoefficients(20);
+  const stalled = evaluateFoilCoefficients(65);
+  assert.ok(attached.cl > stalled.cl, 'Attached foil AoA ~20° produces higher lift coefficient than stalled 65°');
+  assert.ok(stalled.cd > attached.cd, 'Stalled bluff flow produces higher drag coefficient');
+
+  const base = createInitialSimulationState('elan-19');
+  // Running on port tack (boom out to starboard = +1), then wind crosses stern to starboard (+168°)
+  const byTheLee = computeSailForces({ ...base, boomSide: 1, mainsheetPct: 75, simRealism: 1 }, 168, 16);
+  assert.equal(byTheLee.maneuverState, 'by-the-lee');
+
+  // Turning further onto new tack (+140°) with mainsheet strapped triggers accidental gybe slam
+  const gybeSlam = computeSailForces({ ...base, boomSide: 1, mainsheetPct: 75, simRealism: 1 }, 140, 16);
+  assert.equal(gybeSlam.maneuverState, 'gybing');
+  assert.equal(gybeSlam.accidentalGybeSlam, true);
 });
 
 test('Electrical solar charges in daytime and fridge consumes power', () => {
@@ -75,7 +99,7 @@ test('Anchoring deploys in shallow cove and swings boat with tidal stream', () =
   assert.notEqual(flood.anchor.tidalCurrentDeg, ebb.anchor.tidalCurrentDeg);
 });
 
-test('Chandlery purchase and spare part repair restore damaged mainsail', () => {
+test('Chandlery purchase, spare part repair, Charter contract payout & Ship Happens running costs', () => {
   let state = createInitialSimulationState('elan-19');
   state.wear.mainsail = 45;
   state.inventory.coins = 500;
@@ -88,6 +112,29 @@ test('Chandlery purchase and spare part repair restore damaged mainsail', () => 
   state = applySparePartRepair(state, 'sail-repair-kit');
   assert.equal(state.wear.mainsail, 80);
   assert.equal(state.inventory.parts['sail-repair-kit'], 0);
+
+  const contracts = generatePortContracts('lanzarote', 'la-gomera', 'elan-19');
+  assert.ok(contracts.length >= 2);
+  state = acceptCharterContract(state, contracts[0]);
+  const settled = settlePassageCompletion(state);
+  assert.ok(settled.contractBonusCr > 0, 'Delivering matching charter awards bonus credits');
+  assert.ok(settled.portFeeCr > 0, 'Harbor port fees deducted on arrival');
+});
+
+test('Harbor channel shoaling hazard, boat.cfg wing_sur tuning, and NMEA 0183 checksums', () => {
+  const channelDepth = computeDepthAtPassage(1.5, 0.1, 100);
+  const shoalDepth = computeDepthAtPassage(1.5, 1.5, 100);
+  assert.ok(shoalDepth < 3.0 && shoalDepth < channelDepth, 'Straying outside harbor channel shoals steeply');
+
+  const base = createInitialSimulationState('elan-19');
+  const lowDrag = updateVesselCfg(base, { wingSurDragM2: 1.4, sailAreaM2: 16 });
+  const fBase = computeSailForces(base, -75, 15);
+  const fTuned = computeSailForces(lowDrag, -75, 15);
+  assert.ok(fTuned.targetSpeedKts > fBase.targetSpeedKts, 'Lower wing_sur + larger sail area increases boat speed');
+
+  const nmea = buildNmeaSentences(base);
+  assert.match(nmea.gprmc, /^\$GPRMC,.*\*[0-9A-F]{2}$/);
+  assert.match(nmea.iimwv, /^\$IIMWV,.*\*[0-9A-F]{2}$/);
 });
 
 test('Sleep/watch wakes early if unreefed squall hits', () => {

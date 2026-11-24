@@ -1,13 +1,24 @@
 import { BOAT_SPECS, CHANDLERY_ITEMS } from './boats';
+import {
+  classifyPointOfSail,
+  getOptimalSheetPct,
+  getReefAreaFactor,
+  solveFoilAndManeuver,
+  type FoilForceOutput,
+} from './foilPhysics';
 import { computeGreatCircleNm, HANDCRAFTED_HUBS } from './worldHubs';
 import type {
   BoatId,
+  CharterContract,
   PointOfSail,
   ReefLevel,
   SimulationState,
   SystemKey,
+  VesselCfgParams,
   WorldHub,
 } from '../types/sailing';
+
+export { classifyPointOfSail, getOptimalSheetPct, getReefAreaFactor };
 
 export function normalizeAngle360(deg: number): number {
   const r = deg % 360;
@@ -73,39 +84,20 @@ export function computeApparentWind(
   return { awaDeg, awsKts };
 }
 
-export function classifyPointOfSail(absAwaDeg: number, noGoDeg: number): PointOfSail {
-  if (absAwaDeg < noGoDeg) return 'In Irons';
-  if (absAwaDeg < 60) return 'Close-Hauled';
-  if (absAwaDeg < 82) return 'Close Reach';
-  if (absAwaDeg < 115) return 'Beam Reach';
-  if (absAwaDeg < 155) return 'Broad Reach';
-  return 'Running';
-}
-
 /**
- * Returns optimal mainsheet / jibsheet trim percentage (0..100) for a given apparent wind angle.
- * Close-hauled = 92% strapped in; Running = 10% eased way out.
- */
-export function getOptimalSheetPct(absAwaDeg: number): number {
-  const clamped = clamp(absAwaDeg, 35, 180);
-  const t = (clamped - 35) / (180 - 35);
-  return Math.round(lerp(94, 12, t));
-}
-
-export function getReefAreaFactor(reef: ReefLevel): number {
-  if (reef === 0) return 1.0;
-  if (reef === 1) return 0.72;
-  return 0.46;
-}
-
-/**
- * Computes water depth in meters along the 100 NM passage.
- * Departure (xNm < 3) and destination cove (xNm near totalDistanceNm) shoal down to 5.5m - 9m sand.
+ * Computes water depth in meters along the passage, including Ship Happens-style
+ * harbor approach channel shoals if straying outside |zNm| > 0.72 NM near port.
  */
 export function computeDepthAtPassage(xNm: number, zNm: number, totalDistanceNm: number): number {
   const distFromStart = Math.hypot(xNm, zNm);
   const distFromDest = Math.hypot(totalDistanceNm - xNm, zNm);
   const nearestCoastNm = Math.min(distFromStart, distFromDest);
+
+  // Harbor approach channel shoaling hazard outside marked buoyed channel
+  if (nearestCoastNm < 3.2 && Math.abs(zNm) > 0.72) {
+    const shoalFactor = clamp((Math.abs(zNm) - 0.72) / 1.1, 0, 1);
+    return Number(lerp(4.4, 1.5, shoalFactor).toFixed(1));
+  }
 
   if (nearestCoastNm < 0.35) return 5.8;
   if (nearestCoastNm < 1.2) return lerp(6.0, 14.0, (nearestCoastNm - 0.35) / 0.85);
@@ -130,16 +122,26 @@ export function createInitialSimulationState(
 
   return {
     boatId,
+    vesselCfg: { ...spec.defaultCfg },
     simRealism: 0.65, // 65% Simulation by default, user can slide 0 (Arcade) -> 1 (Sim)
     headingDeg: 90, // Heading due East toward destination along local +X axis
+    cogDeg: 90,
     rudderAngleDeg: 0,
     boatSpeedKts: 4.8,
+    sogKts: 5.2,
     leewayDeg: 1.5,
     heelDeg: 8,
     pitchDeg: 0,
     apparentWindAngleDeg: -65, // Port beam/close reach in trade winds
     apparentWindSpeedKts: 15.2,
     pointOfSail: 'Close Reach',
+    tackSide: 'port',
+    boomSide: 1, // port wind pushes boom to starboard
+    boomAngleDeg: 24,
+    maneuverState: 'sailing',
+    angleOfAttackDeg: 22,
+    sailLiftN: 680,
+    sailDragN: 190,
     mainsheetPct: 76,
     jibsheetPct: 74,
     jibDeployed: true,
@@ -179,6 +181,9 @@ export function createInitialSimulationState(
       parts: {
         'sail-repair-kit': 1,
       },
+      activeContract: null,
+      totalRunningCostsCr: 0,
+      totalChartersCompleted: 0,
     },
     anchor: {
       deployed: false,
@@ -203,6 +208,8 @@ export function createInitialSimulationState(
       barometerHpa: 1018,
       barometerTrend: 'Steady',
       waveHeightM: 1.1,
+      oceanCurrentDirDeg: 110, // Canary Current setting ESE ~0.7 kts
+      oceanCurrentKts: 0.7,
       cloudCover: 0.25,
       rainIntensity: 0,
       timeOfDayHours: 10.5,
@@ -228,118 +235,23 @@ export function createInitialSimulationState(
       voyageComplete: false,
       visitedHubIds: [origin.id],
       monthOfYear: 11, // November trade-wind window
+      channelHazardWarning: false,
+      groundingCount: 0,
+      upkeepChargedDays: 0,
     },
     alertMessage: null,
     lastLogEntry: `Cleared ${origin.name} harbor mouth bound for ${dest.name} (${totalDistanceNm} NM).`,
   };
 }
 
-export interface SailForceResult {
-  targetSpeedKts: number;
-  targetHeelDeg: number;
-  leewayDeg: number;
-  sailEfficiency: number;
-  isLuffing: boolean;
-  isOverpowered: boolean;
-  pointOfSail: PointOfSail;
-}
+export type SailForceResult = FoilForceOutput;
 
 export function computeSailForces(
   state: SimulationState,
   apparentWindAngleDeg: number,
   apparentWindSpeedKts: number,
 ): SailForceResult {
-  const spec = BOAT_SPECS[state.boatId];
-  const realism = state.simRealism; // 0 = Arcade, 1 = Sim
-  const absAwa = Math.abs(apparentWindAngleDeg);
-
-  // Arcade mode reduces no-go zone down to 20°; Sim mode uses full boat noGoAngleDeg
-  const effectiveNoGo = lerp(20, spec.noGoAngleDeg, realism);
-  const pointOfSail = classifyPointOfSail(absAwa, effectiveNoGo);
-
-  // Polar efficiency curve by Apparent Wind Angle
-  let polarFactor = 0;
-  if (absAwa < effectiveNoGo) {
-    // In irons: arcade gives gentle ghosting headway, sim stalls
-    polarFactor = lerp(0.28, 0.0, realism);
-  } else if (absAwa < 55) {
-    polarFactor = lerp(0.55, 0.78, (absAwa - effectiveNoGo) / Math.max(1, 55 - effectiveNoGo));
-  } else if (absAwa < 105) {
-    polarFactor = lerp(0.78, 1.0, (absAwa - 55) / 50); // Beam reach peak
-  } else if (absAwa < 145) {
-    polarFactor = lerp(1.0, 0.88, (absAwa - 105) / 40);
-  } else {
-    polarFactor = lerp(0.88, 0.72, (absAwa - 145) / 35); // Dead run
-  }
-
-  // Trim efficiency: how close mainsheet & jibsheet are to optimal sheet angle
-  const optimalTrim = getOptimalSheetPct(absAwa);
-  const mainDiff = Math.abs(state.mainsheetPct - optimalTrim);
-  const jibDiff = state.jibDeployed ? Math.abs(state.jibsheetPct - optimalTrim) : 25;
-
-  // In Arcade mode, trim mismatch is heavily forgiven (auto-trim assist)
-  const trimPenaltyScale = lerp(0.25, 1.0, realism);
-  const mainEff = clamp(1 - (mainDiff / 85) * trimPenaltyScale, 0.3, 1.0);
-  const jibEff = state.jibDeployed
-    ? clamp(1 - (jibDiff / 90) * trimPenaltyScale, 0.35, 1.0)
-    : 0.68;
-
-  const sailHealthFactor = lerp(0.55, 1.0, state.wear.mainsail / 100);
-  const hullDragFactor = lerp(0.72, 1.0, state.wear.hull / 100);
-  const reefFactor = getReefAreaFactor(state.reefLevel);
-
-  // Luffing occurs if eased too far past optimal or in irons
-  const isLuffing =
-    absAwa < effectiveNoGo ||
-    (state.mainsheetPct < optimalTrim - 28 && apparentWindSpeedKts > 5);
-
-  // Wind pressure scales non-linearly up to hull speed
-  const driveWind = apparentWindSpeedKts * Math.sqrt(reefFactor) * (state.jibDeployed ? 1.0 : 0.78);
-  const rawSpeed =
-    spec.hullSpeedKts *
-    clamp(driveWind / 17.5, 0.08, 1.18) *
-    polarFactor *
-    (mainEff * 0.65 + jibEff * 0.35) *
-    sailHealthFactor *
-    hullDragFactor;
-
-  // Lateral heeling force peaks close-hauled / beam reach and drops downwind
-  const lateralMomentFactor = Math.sin(degToRad(clamp(absAwa, 15, 165))) * (absAwa < 100 ? 1.15 : 0.65);
-  const sheetLoadFactor = lerp(0.45, 1.25, state.mainsheetPct / 100);
-  const rawHeel =
-    ((apparentWindSpeedKts * apparentWindSpeedKts) / 22) *
-    (reefFactor * (state.jibDeployed ? 1.0 : 0.72)) *
-    lateralMomentFactor *
-    sheetLoadFactor /
-    spec.rightingMoment;
-
-  // Arcade caps heel comfortably; Sim allows severe knockdown heel if unreefed in squalls
-  const heelScale = lerp(0.58, 1.08, realism);
-  const signedHeel =
-    Math.sign(apparentWindAngleDeg || 1) * clamp(rawHeel * heelScale, 0, 46);
-  const isOverpowered = Math.abs(signedHeel) > spec.maxSafeHeelDeg;
-
-  // Excess heel reduces forward drive efficiency (weather helm + immersed hull drag)
-  const overpowerDrag = isOverpowered
-    ? clamp(1 - (Math.abs(signedHeel) - spec.maxSafeHeelDeg) * 0.025, 0.55, 1.0)
-    : 1.0;
-
-  // Leeway (sideways slip) increases when close-hauled & heeled in Sim mode
-  const leewaySign = Math.sign(apparentWindAngleDeg || 1);
-  const leewayDeg =
-    absAwa < 110
-      ? leewaySign * clamp((Math.abs(signedHeel) / 8) * lerp(0.15, 1.0, realism), 0, 8)
-      : 0;
-
-  return {
-    targetSpeedKts: Number(clamp(rawSpeed * overpowerDrag, 0, spec.hullSpeedKts * 1.15).toFixed(2)),
-    targetHeelDeg: Number(signedHeel.toFixed(1)),
-    leewayDeg: Number(leewayDeg.toFixed(1)),
-    sailEfficiency: Number((polarFactor * (mainEff * 0.65 + jibEff * 0.35)).toFixed(2)),
-    isLuffing,
-    isOverpowered,
-    pointOfSail,
-  };
+  return solveFoilAndManeuver(state, apparentWindAngleDeg, apparentWindSpeedKts);
 }
 
 export function updateWeather(
@@ -598,7 +510,12 @@ export function stepSimulation(
     return {
       ...prev,
       headingDeg: anchored.headingDeg,
+      cogDeg: anchored.headingDeg,
       boatSpeedKts: 0,
+      sogKts: 0,
+      sailLiftN: 0,
+      sailDragN: 0,
+      maneuverState: 'sailing',
       heelDeg: Number((Math.sin(degToRad(awaDeg)) * (awsKts / 25) * 4).toFixed(1)),
       apparentWindAngleDeg: Number(awaDeg.toFixed(1)),
       apparentWindSpeedKts: Number(awsKts.toFixed(1)),
@@ -636,8 +553,12 @@ export function stepSimulation(
     rudderAngleDeg = lerp(rudderAngleDeg, 0, clamp(dt * 2.2, 0, 1));
   }
 
-  // Rudder turn rate depends on boat speed & rudder health
-  const rudderAuthority = clamp(prev.boatSpeedKts / 2.2, 0.25, 1.2) * lerp(0.5, 1.0, prev.wear.rudder / 100);
+  // Rudder turn rate depends on boat speed, rudder area (boat.cfg), & rudder health
+  const rudderAreaRatio = clamp((prev.vesselCfg?.rudderAreaM2 ?? spec.defaultCfg.rudderAreaM2) / spec.defaultCfg.rudderAreaM2, 0.6, 1.6);
+  const rudderAuthority =
+    clamp(prev.boatSpeedKts / 2.2, 0.25, 1.2) *
+    rudderAreaRatio *
+    lerp(0.5, 1.0, prev.wear.rudder / 100);
   headingDeg = normalizeAngle360(headingDeg + rudderAngleDeg * rudderAuthority * dt * 0.85);
 
   const { awaDeg, awsKts } = computeApparentWind(
@@ -647,36 +568,72 @@ export function stepSimulation(
     weather.trueWindSpeedKts,
   );
 
-  const forces = computeSailForces(prev, awaDeg, awsKts);
+  const forces = solveFoilAndManeuver(prev, awaDeg, awsKts);
   const speedDamp = clamp(dt * 1.4, 0, 1);
   const boatSpeedKts = Number(lerp(prev.boatSpeedKts, forces.targetSpeedKts, speedDamp).toFixed(2));
   const heelDeg = Number(lerp(prev.heelDeg, forces.targetHeelDeg, clamp(dt * 2.4, 0, 1)).toFixed(1));
 
-  // Position integration in NM along local passage coordinate frame (+X = East toward dest)
+  // Position integration in NM: STW + Leeway + Ocean Current + Coastal Tidal Stream -> SOG & COG (Virtual Sailor NG)
   const trackHeadingRad = degToRad(headingDeg + forces.leewayDeg);
-  const distNmStep = boatSpeedKts * simHoursDelta;
-  // Also include gentle tidal stream near coasts
   const coastalTideFactor = depthM < 40 ? 0.35 : 0.05;
   const tideRad = degToRad(prev.anchor.tidalCurrentDeg);
-  const nextX =
-    prev.passage.xNm +
-    Math.sin(trackHeadingRad) * distNmStep +
-    Math.sin(tideRad) * prev.anchor.tidalCurrentKts * coastalTideFactor * simHoursDelta;
-  const nextZ =
-    prev.passage.zNm -
-    Math.cos(trackHeadingRad) * distNmStep -
-    Math.cos(tideRad) * prev.anchor.tidalCurrentKts * coastalTideFactor * simHoursDelta;
+  const currentRad = degToRad(weather.oceanCurrentDirDeg);
 
-  // Wear & maintenance degradation scaled by realism slider
+  const velX =
+    Math.sin(trackHeadingRad) * boatSpeedKts +
+    Math.sin(currentRad) * weather.oceanCurrentKts +
+    Math.sin(tideRad) * prev.anchor.tidalCurrentKts * coastalTideFactor;
+  const velZ =
+    -Math.cos(trackHeadingRad) * boatSpeedKts -
+    Math.cos(currentRad) * weather.oceanCurrentKts -
+    Math.cos(tideRad) * prev.anchor.tidalCurrentKts * coastalTideFactor;
+
+  const sogKts = Number(Math.hypot(velX, velZ).toFixed(2));
+  const cogDeg = sogKts > 0.15 ? Number(normalizeAngle360(radToDeg(Math.atan2(velX, -velZ))).toFixed(1)) : headingDeg;
+
+  const distNmStep = boatSpeedKts * simHoursDelta;
+  const nextX = prev.passage.xNm + velX * simHoursDelta;
+  const nextZ = prev.passage.zNm + velZ * simHoursDelta;
+  const nextDepthM = computeDepthAtPassage(nextX, nextZ, prev.passage.totalDistanceNm);
+
+  // Wear & maintenance degradation scaled by realism slider + Tiller accidental gybe shock
   const wearScale = lerp(0.2, 1.0, prev.simRealism);
   const nextWear = { ...prev.wear };
-  // Overpowered in squall wears mainsail & rigging rapidly if not reefed!
   const overpowerPenalty = forces.isOverpowered ? 3.8 : 0.12;
   const luffingPenalty = forces.isLuffing ? 1.4 : 0;
-  nextWear.mainsail = Math.max(10, nextWear.mainsail - (overpowerPenalty + luffingPenalty) * simHoursDelta * wearScale);
-  nextWear.rigging = Math.max(15, nextWear.rigging - (forces.isOverpowered ? 2.4 : 0.08) * simHoursDelta * wearScale);
+  const gybeMainShock = forces.accidentalGybeSlam ? 4.5 * wearScale : 0;
+  const gybeRigShock = forces.accidentalGybeSlam ? 3.8 * wearScale : 0;
+
+  nextWear.mainsail = Math.max(10, nextWear.mainsail - (overpowerPenalty + luffingPenalty) * simHoursDelta * wearScale - gybeMainShock);
+  nextWear.rigging = Math.max(15, nextWear.rigging - (forces.isOverpowered ? 2.4 : 0.08) * simHoursDelta * wearScale - gybeRigShock);
   nextWear.hull = Math.max(20, nextWear.hull - 0.07 * simHoursDelta * wearScale);
   nextWear.rudder = Math.max(20, nextWear.rudder - (Math.abs(rudderAngleDeg) > 20 ? 0.35 : 0.06) * simHoursDelta * wearScale);
+
+  // Ship Happens harbor channel shoal & grounding check
+  let coins = prev.inventory.coins;
+  let totalRunningCostsCr = prev.inventory.totalRunningCostsCr;
+  let groundingCount = prev.passage.groundingCount;
+  const channelHazardWarning = nextDepthM < 4.5 && !prev.anchor.deployed;
+  let groundedThisTick = false;
+
+  if (nextDepthM < 2.2 && !prev.anchor.deployed && boatSpeedKts > 1.2) {
+    groundedThisTick = true;
+    nextWear.hull = Math.max(15, nextWear.hull - 6.5 * wearScale);
+    groundingCount += 1;
+  }
+
+  // Ship Happens daily upkeep & insurance deduction on elapsed voyage days
+  const nextElapsedHours = Number((prev.passage.elapsedHours + simHoursDelta).toFixed(2));
+  const totalWholeDays = Math.floor(nextElapsedHours / 24);
+  let upkeepChargedDays = prev.passage.upkeepChargedDays;
+  if (totalWholeDays > upkeepChargedDays) {
+    const newDays = totalWholeDays - upkeepChargedDays;
+    const dailyCost = prev.vesselCfg?.dailyUpkeepCr ?? spec.defaultCfg.dailyUpkeepCr;
+    const charge = newDays * dailyCost;
+    coins = Math.max(0, coins - charge);
+    totalRunningCostsCr += charge;
+    upkeepChargedDays = totalWholeDays;
+  }
 
   const electrical = updateElectricalAndGalley(prev, simHoursDelta);
 
@@ -684,44 +641,72 @@ export function stepSimulation(
   const arrivedAtCove = distToDest <= 2.5 || nextX >= prev.passage.totalDistanceNm - 1.5;
 
   let alertMessage: string | null = null;
-  if (weather.phase === 'squall' && prev.reefLevel === 0 && forces.isOverpowered) {
+  if (groundedThisTick) {
+    alertMessage = `Shoal grounding! Steer back toward channel center (z ≈ 0 NM) — hull damaged (${Math.round(nextWear.hull)}%).`;
+  } else if (forces.accidentalGybeSlam) {
+    alertMessage = 'ACCIDENTAL GYBE! Boom slammed across cockpit from by-the-lee — ease mainsheet before gybing!';
+  } else if (forces.maneuverState === 'by-the-lee') {
+    alertMessage = 'Sailing BY THE LEE — wind on leeward side of main; gybe risk high!';
+  } else if (channelHazardWarning) {
+    alertMessage = `Harbor shoal warning (${nextDepthM.toFixed(1)}m depth) — keep inside marked channel!`;
+  } else if (weather.phase === 'squall' && prev.reefLevel === 0 && forces.isOverpowered) {
     alertMessage = 'Squall gust overpowering full mainsail! Reef main (Reef 1 or 2) to reduce heel & sail wear.';
   } else if (weather.phase === 'barometer-falling') {
     alertMessage = 'Barometer falling rapidly — squall front approaching.';
   } else if (electrical.batteryAh / electrical.batteryCapacityAh < 0.2) {
     alertMessage = 'House battery low (<20%) — shed fridge or lights to preserve instruments.';
   } else if (arrivedAtCove && !prev.passage.arrivedAtCove) {
-    alertMessage = `Landfall! Entered ${prev.passage.toName} sheltered anchorage. Ready to drop anchor.`;
+    alertMessage = `Landfall! Entered ${prev.passage.toName} sheltered anchorage. Keep clear of shoals & drop anchor.`;
   }
 
   return {
     ...prev,
     headingDeg: Number(headingDeg.toFixed(1)),
+    cogDeg,
     rudderAngleDeg: Number(rudderAngleDeg.toFixed(1)),
     boatSpeedKts,
+    sogKts,
     leewayDeg: forces.leewayDeg,
     heelDeg,
     apparentWindAngleDeg: Number(awaDeg.toFixed(1)),
     apparentWindSpeedKts: Number(awsKts.toFixed(1)),
     pointOfSail: forces.pointOfSail,
+    tackSide: forces.tackSide,
+    boomSide: forces.boomSide,
+    boomAngleDeg: forces.boomAngleDeg,
+    maneuverState: forces.maneuverState,
+    angleOfAttackDeg: forces.angleOfAttackDeg,
+    sailLiftN: forces.sailLiftN,
+    sailDragN: forces.sailDragN,
     sailEfficiency: forces.sailEfficiency,
     isLuffing: forces.isLuffing,
     isOverpowered: forces.isOverpowered,
     electrical,
     wear: nextWear,
+    inventory: {
+      ...prev.inventory,
+      coins,
+      totalRunningCostsCr,
+    },
     weather,
     passage: {
       ...prev.passage,
       xNm: nextX,
       zNm: nextZ,
-      depthM: computeDepthAtPassage(nextX, nextZ, prev.passage.totalDistanceNm),
+      depthM: nextDepthM,
       distanceSailedNm: Number((prev.passage.distanceSailedNm + distNmStep).toFixed(2)),
-      elapsedHours: Number((prev.passage.elapsedHours + simHoursDelta).toFixed(2)),
+      elapsedHours: nextElapsedHours,
       peakSpeedKts: Math.max(prev.passage.peakSpeedKts, boatSpeedKts),
       maxGustKts: Math.max(prev.passage.maxGustKts, weather.gustSpeedKts),
       arrivedAtCove,
+      channelHazardWarning,
+      groundingCount,
+      upkeepChargedDays,
     },
     alertMessage,
+    lastLogEntry: forces.accidentalGybeSlam
+      ? 'Accidental gybe slammed boom across cockpit.'
+      : prev.lastLogEntry,
   };
 }
 
@@ -851,6 +836,7 @@ export function buyChandleryItem(prev: SimulationState, itemId: string): Simulat
   return {
     ...prev,
     inventory: {
+      ...prev.inventory,
       coins,
       parts: {
         ...prev.inventory.parts,
@@ -890,6 +876,86 @@ export function applySparePartRepair(
   };
 }
 
+export function acceptCharterContract(
+  prev: SimulationState,
+  contract: CharterContract,
+): SimulationState {
+  return {
+    ...prev,
+    inventory: {
+      ...prev.inventory,
+      activeContract: contract,
+    },
+    lastLogEntry: `Signed charter: ${contract.title} (+${contract.rewardCr} Cr on arrival at ${contract.toName}).`,
+  };
+}
+
+export function settlePassageCompletion(prev: SimulationState): {
+  state: SimulationState;
+  harborBountyCr: number;
+  contractBonusCr: number;
+  portFeeCr: number;
+  netEarnedCr: number;
+} {
+  const spec = BOAT_SPECS[prev.boatId];
+  const harborBountyCr = Math.round(450 + prev.passage.totalDistanceNm * 4);
+  const portFeeCr = Math.round((prev.vesselCfg?.dailyUpkeepCr ?? spec.defaultCfg.dailyUpkeepCr) * 1.5);
+
+  let contractBonusCr = 0;
+  let totalChartersCompleted = prev.inventory.totalChartersCompleted;
+  const contract = prev.inventory.activeContract;
+  if (contract && contract.toHubId === prev.passage.toHubId) {
+    const onTime = prev.passage.elapsedHours <= contract.deadlineHours;
+    const intact = !contract.fragile || prev.passage.groundingCount === 0;
+    contractBonusCr = Math.round(contract.rewardCr * (onTime ? 1.0 : 0.65) * (intact ? 1.0 : 0.7));
+    totalChartersCompleted += 1;
+  }
+
+  const netEarnedCr = harborBountyCr + contractBonusCr - portFeeCr;
+  const nextCoins = Math.max(0, prev.inventory.coins + netEarnedCr);
+
+  const updated: SimulationState = {
+    ...prev,
+    inventory: {
+      ...prev.inventory,
+      coins: nextCoins,
+      activeContract: contract && contract.toHubId === prev.passage.toHubId ? null : contract,
+      totalRunningCostsCr: prev.inventory.totalRunningCostsCr + portFeeCr,
+      totalChartersCompleted,
+    },
+    passage: {
+      ...prev.passage,
+      voyageComplete: true,
+      visitedHubIds: Array.from(new Set([...prev.passage.visitedHubIds, prev.passage.toHubId])),
+    },
+    lastLogEntry: `Logged landfall at ${prev.passage.toName}. Harbor +${harborBountyCr} Cr, Charter +${contractBonusCr} Cr, Port dues -${portFeeCr} Cr.`,
+  };
+
+  return { state: updated, harborBountyCr, contractBonusCr, portFeeCr, netEarnedCr };
+}
+
+export function updateVesselCfg(
+  prev: SimulationState,
+  patch: Partial<VesselCfgParams>,
+): SimulationState {
+  return {
+    ...prev,
+    vesselCfg: {
+      ...prev.vesselCfg,
+      ...patch,
+    },
+    lastLogEntry: 'Updated boat.cfg / hydrodynamic surface parameters.',
+  };
+}
+
+export function resetVesselCfg(prev: SimulationState): SimulationState {
+  return {
+    ...prev,
+    vesselCfg: { ...BOAT_SPECS[prev.boatId].defaultCfg },
+    lastLogEntry: `Reset ${BOAT_SPECS[prev.boatId].name} boat.cfg to factory spec.`,
+  };
+}
+
 export function switchOrPurchaseBoat(prev: SimulationState, targetBoat: BoatId): SimulationState {
   if (prev.boatId === targetBoat) return prev;
   const spec = BOAT_SPECS[targetBoat];
@@ -905,6 +971,7 @@ export function switchOrPurchaseBoat(prev: SimulationState, targetBoat: BoatId):
   return {
     ...prev,
     boatId: targetBoat,
+    vesselCfg: { ...spec.defaultCfg },
     inventory: {
       ...prev.inventory,
       coins: prev.inventory.coins - cost,

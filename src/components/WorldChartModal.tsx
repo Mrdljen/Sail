@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { X, Compass, AlertTriangle, Anchor, Ship } from 'lucide-react';
 import {
   computeGreatCircleNm,
@@ -50,6 +50,16 @@ export function WorldChartModal({
     () => HANDCRAFTED_HUBS.find((h) => h.id === currentToId) ?? HANDCRAFTED_HUBS[1],
   );
   const [selectedStop, setSelectedStop] = useState<WorldHub>(toHub);
+
+  useEffect(() => {
+    if (open) {
+      const nextFrom = HANDCRAFTED_HUBS.find((h) => h.id === currentFromId) ?? HANDCRAFTED_HUBS[0];
+      const nextTo = HANDCRAFTED_HUBS.find((h) => h.id === currentToId) ?? HANDCRAFTED_HUBS[1];
+      setFromHub(nextFrom);
+      setToHub(nextTo);
+      setSelectedStop(nextTo);
+    }
+  }, [open, currentFromId, currentToId]);
 
   const proceduralAtolls = useMemo(
     () => generateIntermediateAnchorages(fromHub, toHub, 4),
