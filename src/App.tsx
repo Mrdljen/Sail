@@ -12,14 +12,19 @@ import {
   clamp,
   createInitialSimulationState,
   deployOrRaiseAnchor,
+  migrateSaveState,
   normalizeAngle180,
   resetVesselCfg,
+  resolveDistressRecovery,
   settlePassageCompletion,
   simulateWatchSleep,
   stepSimulation,
+  stepSimulationWithAccumulator,
   switchOrPurchaseBoat,
   updateVesselCfg,
 } from './sim/physics';
+import { getRealismProfile } from './sim/realism';
+import { BOAT_SPECS } from './sim/boats';
 import type { InteractiveAction } from './three/boatBuilder';
 import { SailingSceneController } from './three/oceanScene';
 import type {
@@ -32,24 +37,20 @@ import type {
   WorldHub,
 } from './types/sailing';
 
-const STORAGE_KEY = 'meridian_passage_save_v1';
+const STORAGE_KEY = 'meridian_passage_save_v2';
+const LEGACY_STORAGE_KEY = 'meridian_passage_save_v1';
 
 function loadInitialState(): SimulationState {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as Partial<SimulationState>;
-      if (parsed && parsed.boatId && parsed.passage && parsed.weather) {
-        const base = createInitialSimulationState(parsed.boatId);
-        return {
-          ...base,
-          ...parsed,
-          vesselCfg: { ...base.vesselCfg, ...(parsed.vesselCfg ?? {}) },
-          inventory: { ...base.inventory, ...(parsed.inventory ?? {}) },
-          weather: { ...base.weather, ...(parsed.weather ?? {}) },
-          passage: { ...base.passage, ...(parsed.passage ?? {}) },
-        };
-      }
+    const rawV2 = localStorage.getItem(STORAGE_KEY);
+    if (rawV2) {
+      return migrateSaveState(JSON.parse(rawV2));
+    }
+    const rawV1 = localStorage.getItem(LEGACY_STORAGE_KEY);
+    if (rawV1) {
+      const migrated = migrateSaveState(JSON.parse(rawV1));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
+      return migrated;
     }
   } catch {
     // Ignore corrupt local storage
@@ -71,15 +72,23 @@ export default function App() {
   const [dockCollapsed, setDockCollapsed] = useState(false);
   const [worldChartOpen, setWorldChartOpen] = useState(false);
   const [chandleryOpen, setChandleryOpen] = useState(false);
+  const [touchPadEnabled, setTouchPadEnabled] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return Boolean(
+      window.matchMedia?.('(pointer: coarse)').matches || window.innerWidth <= 1024,
+    );
+  });
   const [hoverTooltip, setHoverTooltip] = useState<{ label: string; x: number; y: number } | null>(
     null,
   );
 
   const canvasMountRef = useRef<HTMLDivElement | null>(null);
   const simRef = useRef<SimulationState>(sim);
+  const physAccumRef = useRef<number>(0);
   const screenRef = useRef<GameScreenState>(screenState);
   const cameraModeRef = useRef<CameraViewMode>(cameraMode);
   const keysPressedRef = useRef<Set<string>>(new Set());
+  const virtualSteerRef = useRef<-1 | 0 | 1>(0);
   const audioRef = useRef<SailingAudioEngine | null>(null);
   const lastHudSyncRef = useRef<number>(0);
   const lastSaveRef = useRef<number>(0);
@@ -88,6 +97,10 @@ export default function App() {
   useEffect(() => {
     screenRef.current = screenState;
     document.body.dataset.state = screenState;
+    if (screenState !== 'playing') {
+      setHoverTooltip(null);
+      virtualSteerRef.current = 0;
+    }
   }, [screenState]);
 
   useEffect(() => {
@@ -233,6 +246,40 @@ export default function App() {
         case 'toggle-anchor':
           handleToggleAnchor();
           break;
+        case 'toggle-staysail':
+          audioRef.current?.playWinchRatchet();
+          commitSim({
+            ...prev,
+            staysailDeployed: !prev.staysailDeployed,
+            lastLogEntry: !prev.staysailDeployed ? 'Cutter staysail hoisted.' : 'Cutter staysail furled.',
+          });
+          break;
+        case 'steer-port-5':
+          audioRef.current?.playSwitchClick();
+          commitSim({
+            ...prev,
+            headingDeg: (prev.headingDeg - 5 + 360) % 360,
+            autopilotTargetDeg:
+              prev.autopilotMode === 'compass'
+                ? (prev.headingDeg - 5 + 360) % 360
+                : prev.autopilotMode === 'windvane'
+                  ? normalizeAngle180(prev.autopilotTargetDeg + 5)
+                  : prev.autopilotTargetDeg,
+          });
+          break;
+        case 'steer-stbd-5':
+          audioRef.current?.playSwitchClick();
+          commitSim({
+            ...prev,
+            headingDeg: (prev.headingDeg + 5 + 360) % 360,
+            autopilotTargetDeg:
+              prev.autopilotMode === 'compass'
+                ? (prev.headingDeg + 5 + 360) % 360
+                : prev.autopilotMode === 'windvane'
+                  ? normalizeAngle180(prev.autopilotTargetDeg - 5)
+                  : prev.autopilotTargetDeg,
+          });
+          break;
         case 'open-chandlery':
           setChandleryOpen(true);
           break;
@@ -266,11 +313,12 @@ export default function App() {
       },
       onTickSimulation: (dt) => {
         const keys = keysPressedRef.current;
-        let rudderInput = 0;
+        let rudderInput: number = virtualSteerRef.current;
         if (keys.has('KeyA') || keys.has('ArrowLeft')) rudderInput -= 1;
         if (keys.has('KeyD') || keys.has('ArrowRight')) rudderInput += 1;
+        rudderInput = clamp(rudderInput, -1, 1);
 
-        let next = stepSimulation(simRef.current, dt, { rudderInput });
+        let next = stepSimulationWithAccumulator(simRef.current, physAccumRef, dt, { rudderInput });
 
         // Continuous sheet trimming via Q / E
         if (keys.has('KeyQ')) {
@@ -362,6 +410,7 @@ export default function App() {
 
     const releaseAllKeys = () => {
       keysPressedRef.current.clear();
+      virtualSteerRef.current = 0;
     };
 
     window.addEventListener('keydown', onKeyDown);
@@ -392,6 +441,7 @@ export default function App() {
           monthOfYear: prev.passage.monthOfYear,
         },
       };
+      physAccumRef.current = 0;
       commitSim(merged);
       setScreenState('playing');
     },
@@ -434,8 +484,10 @@ export default function App() {
           cameraMode={cameraMode}
           muted={muted}
           dockCollapsed={dockCollapsed}
+          touchPadEnabled={touchPadEnabled}
           hoverTooltip={hoverTooltip}
           onToggleDock={() => setDockCollapsed((v) => !v)}
+          onToggleTouchPad={() => setTouchPadEnabled((v) => !v)}
           onSetCameraMode={(m) => setCameraMode(m)}
           onToggleMute={() => {
             const next = !muted;
@@ -445,6 +497,9 @@ export default function App() {
           onPause={() => setScreenState('paused')}
           onOpenWorldChart={() => setWorldChartOpen(true)}
           onOpenChandlery={() => setChandleryOpen(true)}
+          onHoldSteer={(dir) => {
+            virtualSteerRef.current = dir;
+          }}
           onSteerStep={(deltaDeg) => {
             const prev = simRef.current;
             const nextHeading = (prev.headingDeg + deltaDeg + 360) % 360;
@@ -462,7 +517,7 @@ export default function App() {
             });
           }}
           onSetMainsheet={(pct) => {
-            commitSim({ ...simRef.current, mainsheetPct: pct });
+            commitSim({ ...simRef.current, mainsheetPct: clamp(pct, 5, 100) });
           }}
           onSetJibsheet={(pct) => {
             commitSim({ ...simRef.current, jibsheetPct: pct });
@@ -471,6 +526,15 @@ export default function App() {
             audioRef.current?.playWinchRatchet();
             const prev = simRef.current;
             commitSim({ ...prev, jibDeployed: !prev.jibDeployed });
+          }}
+          onToggleStaysail={() => {
+            audioRef.current?.playWinchRatchet();
+            const prev = simRef.current;
+            commitSim({
+              ...prev,
+              staysailDeployed: !prev.staysailDeployed,
+              lastLogEntry: !prev.staysailDeployed ? 'Cutter staysail hoisted.' : 'Cutter staysail furled.',
+            });
           }}
           onSetReef={handleCycleReef}
           onSetSimRealism={(val) => {
@@ -524,6 +588,7 @@ export default function App() {
         sim={sim}
         onResume={() => setScreenState('playing')}
         onRestart={() => {
+          physAccumRef.current = 0;
           const fresh = createInitialSimulationState(sim.boatId);
           commitSim({
             ...fresh,
@@ -534,6 +599,11 @@ export default function App() {
         }}
         onReturnTitle={() => setScreenState('title')}
         onOpenWorldChart={() => setWorldChartOpen(true)}
+        onResolveDistress={() => {
+          audioRef.current?.playSwitchClick();
+          physAccumRef.current = 0;
+          commitSim(resolveDistressRecovery(simRef.current));
+        }}
       />
 
       <WorldChartModal

@@ -1,4 +1,4 @@
-export type BoatId = 'elan-19' | 'rustler-36';
+export type BoatId = 'elan-19' | 'folkboat-25' | 'contessa-32' | 'rustler-36' | 'hallberg-42';
 
 export type CameraViewMode = 'third-person' | 'first-person-helm' | 'first-person-cabin';
 
@@ -9,6 +9,21 @@ export type ReefLevel = 0 | 1 | 2; // 0 = Full main, 1 = Reef 1 (75%), 2 = Reef 
 export type AutopilotMode = 'manual' | 'windvane' | 'compass';
 
 export type WeatherPhase = 'trade-winds' | 'barometer-falling' | 'squall' | 'clearing';
+
+export type RealismPreset = 'arcade' | 'cruising' | 'simulation';
+
+export interface RealismSwitchProfile {
+  preset: RealismPreset;
+  label: string;
+  noGoDeg: number;
+  autoTrimAssist: boolean;
+  inIronsGhostDrive: boolean;
+  accidentalGybeDamage: boolean;
+  waveSlamAndSurf: boolean;
+  forgivingHeelCapDeg: number;
+  wearRateScale: number;
+  leewayScale: number;
+}
 
 export type PointOfSail =
   | 'In Irons'
@@ -25,7 +40,8 @@ export type ManeuverState =
   | 'in-irons'
   | 'tacking'
   | 'gybing'
-  | 'by-the-lee';
+  | 'by-the-lee'
+  | 'crash-gybe';
 
 /**
  * Virtual Sailor NG-inspired moddable boat.cfg / elements.cfg physical surface tuning
@@ -35,6 +51,7 @@ export interface VesselCfgParams {
   massKg: number;
   sailAreaM2: number;
   jibAreaM2: number;
+  staysailAreaM2: number;
   keelAreaM2: number;
   rudderAreaM2: number;
   wingSurDragM2: number; // [wing_sur] hydrodynamic skin & hull drag area
@@ -57,6 +74,36 @@ export interface CharterContract {
   fragile: boolean;
 }
 
+export interface DelftHullParams {
+  lwlM: number; // waterline length LWL (m)
+  bwlM: number; // waterline beam BWL (m) — "guess" when derived from max beam
+  tcM: number; // canoe body draft Tc (m) — "guess"
+  delCM3: number; // canoe body volumetric displacement (m^3) — "guess" from dispKg
+  cp: number; // prismatic coefficient CP — "guess"
+  cm: number; // midship section coefficient CM — "guess"
+  lcbPct: number; // LCB offset aft of midship as fraction of LWL — "guess"
+  lcfPct: number; // LCF offset aft of midship as fraction of LWL — "guess"
+  awM2: number; // waterplane area AW (m^2) — "guess"
+  swcM2: number; // unheeled canoe-body wetted surface Swc (m^2) — "guess"
+  roughnessK: number; // equivalent uniform surface roughness k (m), default 5e-6
+}
+
+export interface GzCurveParams {
+  gm0M: number; // initial transverse metacentric height GM_0 (m) — "guess"
+  gzMaxM: number; // peak righting arm GZ_max (m) — "guess"
+  maxGzAngleDeg: number; // heel angle (deg) of maximum righting arm — "guess"
+  vanishingStabilityDeg: number; // Angle of Vanishing Stability (AVS, deg) — "guess"
+}
+
+export interface ReefPointSpec {
+  mainAreaFrac: number; // geometric remaining mainsail area fraction — "guess"
+  mainCeHeightM: number; // geometric mainsail CE height above waterline (m) — "guess"
+  jibAreaFrac: number; // geometric foresail/jib area fraction — "guess"
+  jibCeHeightM: number; // geometric jib CE height above waterline (m) — "guess"
+  staysailAreaFrac: number; // geometric staysail area fraction — "guess"
+  staysailCeHeightM: number; // geometric staysail CE height above waterline (m) — "guess"
+}
+
 export interface BoatSpec {
   id: BoatId;
   name: string;
@@ -71,15 +118,23 @@ export interface BoatSpec {
   solarPeakWatts: number;
   batteryCapacityAh: number;
   fridgeCapacityDays: number;
+  waterTankLiters: number;
+  spareLockerCapacity: number;
   priceCoins: number;
   hullColorHex: number;
   trimColorHex: number;
   deckLengthM: number;
   deckBeamM: number;
   mastHeightM: number;
+  keelType: 'fin' | 'long' | 'skeg';
   hasWheel: boolean;
   hasWindvane: boolean;
+  hasStaysail: boolean;
+  hasHardDodger: boolean;
   description: string;
+  delftHull: DelftHullParams;
+  gzCurve: GzCurveParams;
+  reefPoints: readonly [ReefPointSpec, ReefPointSpec, ReefPointSpec]; // [Reef 0, Reef 1, Reef 2]
   defaultCfg: VesselCfgParams;
 }
 
@@ -116,6 +171,7 @@ export interface ChandleryItem {
   name: string;
   description: string;
   price: number;
+  lockerSlots?: number;
   targetSystem?: SystemKey;
   repairAmount?: number;
   provisionsDaysAdd?: number;
@@ -202,13 +258,30 @@ export interface PassageState {
   upkeepChargedDays: number;
 }
 
+export interface DistressRecoveryState {
+  active: boolean;
+  cause: 'rigging-failure' | 'hull-breach' | 'provisions-depleted';
+  title: string;
+  description: string;
+  towCostCr: number;
+  timePenaltyHours: number;
+}
+
 export interface SimulationState {
+  saveVersion: number;
   boatId: BoatId;
   vesselCfg: VesselCfgParams;
-  simRealism: number; // 0 = Arcade, 1 = Full Simulation
+  simRealism: number; // 0 = Arcade, 0.5 = Cruising, 1 = Full Simulation
+  realismPreset: RealismPreset;
   headingDeg: number; // 0 = North, 90 = East
   cogDeg: number; // Course Over Ground (deg)
   rudderAngleDeg: number; // -35 to +35
+  // True integrated rigid-body velocities (4-DOF)
+  surgeVelMs: number;
+  swayVelMs: number;
+  yawRateDegS: number;
+  rollVelDegS: number;
+  wavePitchDeg: number;
   boatSpeedKts: number; // Speed Through Water (STW)
   sogKts: number; // Speed Over Ground (SOG)
   leewayDeg: number;
@@ -227,6 +300,7 @@ export interface SimulationState {
   mainsheetPct: number; // 0 (eased/luffing) to 100 (strapped)
   jibsheetPct: number; // 0 to 100
   jibDeployed: boolean;
+  staysailDeployed: boolean;
   reefLevel: ReefLevel;
   sailEfficiency: number; // 0 - 1
   isLuffing: boolean;
@@ -240,6 +314,7 @@ export interface SimulationState {
   anchor: AnchorState;
   weather: WeatherState;
   passage: PassageState;
+  distress: DistressRecoveryState | null;
   alertMessage: string | null;
   lastLogEntry: string;
 }

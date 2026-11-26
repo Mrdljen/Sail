@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { X, Wrench, ShoppingBag, Ship, FileText, Sliders, RotateCcw } from 'lucide-react';
-import { BOAT_SPECS, CHANDLERY_ITEMS, generatePortContracts } from '../sim/boats';
+import { BOAT_ORDER, BOAT_SPECS, CHANDLERY_ITEMS, countLockerSlotsUsed, generatePortContracts } from '../sim/boats';
 import type {
   BoatId,
   CharterContract,
@@ -93,7 +93,7 @@ export function ChandleryModal({
               type="button"
               onClick={onClose}
               aria-label="Close Chandlery"
-              className="p-2 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors cursor-pointer"
+              className="min-h-[44px] min-w-[44px] flex items-center justify-center p-2 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors cursor-pointer"
             >
               <X className="w-5 h-5" />
             </button>
@@ -165,7 +165,7 @@ export function ChandleryModal({
                     key={tab.id}
                     type="button"
                     onClick={() => setRightTab(tab.id)}
-                    className={`flex-1 py-1.5 px-2 rounded-md text-xs font-medium flex items-center justify-center gap-1.5 cursor-pointer ${
+                    className={`flex-1 min-h-[40px] py-1.5 px-2 rounded-md text-xs font-medium flex items-center justify-center gap-1.5 cursor-pointer ${
                       active
                         ? 'bg-amber-500 text-slate-950 font-semibold'
                         : 'text-slate-300 hover:text-white hover:bg-slate-800'
@@ -206,7 +206,7 @@ export function ChandleryModal({
                           type="button"
                           disabled={!canBuy}
                           onClick={() => onBuyItem(item.id)}
-                          className={`px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap shrink-0 ${
+                          className={`min-h-[40px] px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap shrink-0 ${
                             canBuy
                               ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 cursor-pointer'
                               : 'bg-slate-800 text-slate-500 cursor-not-allowed'
@@ -221,12 +221,17 @@ export function ChandleryModal({
 
                 {/* Shipyard Boat Commissioning */}
                 <div className="bg-slate-950/70 border border-slate-800 rounded-lg p-3.5">
-                  <div className="flex items-center gap-2 text-xs font-semibold text-slate-200 mb-2">
-                    <Ship className="w-4 h-4 text-amber-400" aria-hidden="true" />
-                    <span>Boatyard Brokerage</span>
+                  <div className="flex items-center justify-between text-xs font-semibold text-slate-200 mb-2">
+                    <div className="flex items-center gap-2">
+                      <Ship className="w-4 h-4 text-amber-400" aria-hidden="true" />
+                      <span>Boatyard Brokerage (5 Classes)</span>
+                    </div>
+                    <span className="font-mono-tabular text-[11px] text-slate-400">
+                      Locker {countLockerSlotsUsed(sim.inventory.parts)}/{BOAT_SPECS[sim.boatId].spareLockerCapacity}
+                    </span>
                   </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    {(['elan-19', 'rustler-36'] as BoatId[]).map((id) => {
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                    {BOAT_ORDER.map((id) => {
                       const b = BOAT_SPECS[id];
                       const active = sim.boatId === id;
                       const affordable = sim.inventory.coins >= b.priceCoins;
@@ -236,7 +241,7 @@ export function ChandleryModal({
                           type="button"
                           disabled={active || (!affordable && b.priceCoins > 0)}
                           onClick={() => onSwitchBoat(id)}
-                          className={`text-left p-2.5 rounded-lg border text-xs ${
+                          className={`text-left p-2 rounded-lg border text-xs ${
                             active
                               ? 'bg-amber-500/15 border-amber-400 text-slate-100'
                               : affordable || b.priceCoins === 0
@@ -244,9 +249,9 @@ export function ChandleryModal({
                                 : 'bg-slate-900/50 border-slate-800 text-slate-500 cursor-not-allowed'
                           }`}
                         >
-                          <div className="font-semibold">{b.name}</div>
-                          <div className="text-[11px] text-slate-400">
-                            {active ? 'Current Vessel' : b.priceCoins === 0 ? 'Commission Free' : `Upgrade · ${b.priceCoins} Cr`}
+                          <div className="font-semibold truncate">{b.name}</div>
+                          <div className="text-[10px] text-slate-400 truncate">
+                            {active ? 'Current Vessel' : b.priceCoins === 0 ? 'Starter' : `${b.priceCoins} Cr`}
                           </div>
                         </button>
                       );

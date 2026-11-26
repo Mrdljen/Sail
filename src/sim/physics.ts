@@ -1,16 +1,22 @@
-import { BOAT_SPECS, CHANDLERY_ITEMS } from './boats';
+import { BOAT_SPECS, CHANDLERY_ITEMS, countLockerSlotsUsed } from './boats';
 import {
   classifyPointOfSail,
   getOptimalSheetPct,
   getReefAreaFactor,
+  KTS_TO_MS,
+  MS_TO_KTS,
   solveFoilAndManeuver,
+  WATER_RHO,
   type FoilForceOutput,
 } from './foilPhysics';
+import { computeGzRightingMomentNm, evaluateHullResistance } from './hullPhysics';
+import { getRealismProfile } from './realism';
+import { computeRiggingFailureChance, evaluateWearFactors, HYDRO_TUNING, WEAR_TUNING } from './tuning';
 import { computeGreatCircleNm, HANDCRAFTED_HUBS } from './worldHubs';
 import type {
   BoatId,
   CharterContract,
-  PointOfSail,
+  DistressRecoveryState,
   ReefLevel,
   SimulationState,
   SystemKey,
@@ -18,7 +24,10 @@ import type {
   WorldHub,
 } from '../types/sailing';
 
-export { classifyPointOfSail, getOptimalSheetPct, getReefAreaFactor };
+export { classifyPointOfSail, getOptimalSheetPct, getReefAreaFactor, getRealismProfile };
+
+export const CURRENT_SAVE_VERSION = 2;
+export const FIXED_PHYSICS_DT = 1 / 60; // 60 Hz deterministic fixed physics step
 
 export function normalizeAngle360(deg: number): number {
   const r = deg % 360;
@@ -50,7 +59,6 @@ export function lerp(a: number, b: number, t: number): number {
 /**
  * Computes Apparent Wind Angle (relative to bow, -180..+180; positive = wind from starboard)
  * and Apparent Wind Speed (knots).
- * trueWindDirDeg is the compass direction the wind is blowing FROM (0=N, 90=E).
  */
 export function computeApparentWind(
   headingDeg: number,
@@ -61,21 +69,17 @@ export function computeApparentWind(
   const hRad = degToRad(headingDeg);
   const wFromRad = degToRad(trueWindDirDeg);
 
-  // Wind velocity vector (blowing TOWARD wFrom + 180)
   const wToRad = wFromRad + Math.PI;
   const windVx = Math.sin(wToRad) * trueWindSpeedKts;
   const windVz = -Math.cos(wToRad) * trueWindSpeedKts;
 
-  // Boat velocity vector
   const boatVx = Math.sin(hRad) * boatSpeedKts;
   const boatVz = -Math.cos(hRad) * boatSpeedKts;
 
-  // Apparent wind vector = True Wind - Boat Velocity (blowing toward)
   const appToVx = windVx - boatVx;
   const appToVz = windVz - boatVz;
   const awsKts = Math.hypot(appToVx, appToVz);
 
-  // Apparent wind coming FROM vector = -appToV
   const appFromVx = -appToVx;
   const appFromVz = -appToVz;
   const appFromDirDeg = normalizeAngle360(radToDeg(Math.atan2(appFromVx, -appFromVz)));
@@ -93,16 +97,15 @@ export function computeDepthAtPassage(xNm: number, zNm: number, totalDistanceNm:
   const distFromDest = Math.hypot(totalDistanceNm - xNm, zNm);
   const nearestCoastNm = Math.min(distFromStart, distFromDest);
 
-  // Harbor approach channel shoaling hazard outside marked buoyed channel
   if (nearestCoastNm < 3.2 && Math.abs(zNm) > 0.72) {
     const shoalFactor = clamp((Math.abs(zNm) - 0.72) / 1.1, 0, 1);
-    return Number(lerp(4.4, 1.5, shoalFactor).toFixed(1));
+    return lerp(4.4, 1.5, shoalFactor);
   }
 
   if (nearestCoastNm < 0.35) return 5.8;
   if (nearestCoastNm < 1.2) return lerp(6.0, 14.0, (nearestCoastNm - 0.35) / 0.85);
   if (nearestCoastNm < 4.0) return lerp(14.0, 85.0, (nearestCoastNm - 1.2) / 2.8);
-  return Math.round(lerp(85, 2400, clamp((nearestCoastNm - 4.0) / 18.0, 0, 1)));
+  return lerp(85, 2400, clamp((nearestCoastNm - 4.0) / 18.0, 0, 1));
 }
 
 export function createInitialSimulationState(
@@ -110,33 +113,43 @@ export function createInitialSimulationState(
   fromHub?: WorldHub,
   toHub?: WorldHub,
 ): SimulationState {
-  const spec = BOAT_SPECS[boatId];
-  const origin = fromHub ?? HANDCRAFTED_HUBS[0]; // Lanzarote
-  const dest = toHub ?? HANDCRAFTED_HUBS[1]; // La Gomera
+  const spec = BOAT_SPECS[boatId] ?? BOAT_SPECS['elan-19'];
+  const origin = fromHub ?? HANDCRAFTED_HUBS[0];
+  const dest = toHub ?? HANDCRAFTED_HUBS[1];
 
-  // Vertical slice is calibrated as a crisp 100 NM passage when using default Canary run
   const isDefaultVerticalSlice = origin.id === 'lanzarote' && dest.id === 'la-gomera';
   const totalDistanceNm = isDefaultVerticalSlice
     ? 100
     : Math.max(45, computeGreatCircleNm(origin.lat, origin.lon, dest.lat, dest.lon));
 
+  const initSpeedKts = Math.min(spec.hullSpeedKts * 0.72, 4.8 + (spec.lengthFt - 19) * 0.08);
+  const simRealism = 0.65;
+  const profile = getRealismProfile(simRealism, spec.noGoAngleDeg);
+
   return {
-    boatId,
+    saveVersion: CURRENT_SAVE_VERSION,
+    boatId: spec.id,
     vesselCfg: { ...spec.defaultCfg },
-    simRealism: 0.65, // 65% Simulation by default, user can slide 0 (Arcade) -> 1 (Sim)
-    headingDeg: 90, // Heading due East toward destination along local +X axis
+    simRealism,
+    realismPreset: profile.preset,
+    headingDeg: 90,
     cogDeg: 90,
     rudderAngleDeg: 0,
-    boatSpeedKts: 4.8,
-    sogKts: 5.2,
+    surgeVelMs: initSpeedKts * KTS_TO_MS,
+    swayVelMs: 0.08,
+    yawRateDegS: 0,
+    rollVelDegS: 0,
+    wavePitchDeg: 0,
+    boatSpeedKts: initSpeedKts,
+    sogKts: initSpeedKts + 0.4,
     leewayDeg: 1.5,
-    heelDeg: 8,
+    heelDeg: -8, // Port tack (wind from port = AWA -65) -> heels starboard (negative rotation around Z? Let's keep sign consistent with solveFoil)
     pitchDeg: 0,
-    apparentWindAngleDeg: -65, // Port beam/close reach in trade winds
+    apparentWindAngleDeg: -65,
     apparentWindSpeedKts: 15.2,
     pointOfSail: 'Close Reach',
     tackSide: 'port',
-    boomSide: 1, // port wind pushes boom to starboard
+    boomSide: 1,
     boomAngleDeg: 24,
     maneuverState: 'sailing',
     angleOfAttackDeg: 22,
@@ -145,6 +158,7 @@ export function createInitialSimulationState(
     mainsheetPct: 76,
     jibsheetPct: 74,
     jibDeployed: true,
+    staysailDeployed: spec.hasStaysail,
     reefLevel: 0,
     sailEfficiency: 0.92,
     isLuffing: false,
@@ -166,7 +180,7 @@ export function createInitialSimulationState(
       voltage: 12.7,
       fridgeTempC: 4.2,
       provisionsDays: spec.fridgeCapacityDays,
-      waterLiters: boatId === 'elan-19' ? 48 : 180,
+      waterLiters: spec.waterTankLiters * 0.85,
     },
     wear: {
       mainsail: 96,
@@ -202,13 +216,13 @@ export function createInitialSimulationState(
     },
     weather: {
       phase: 'trade-winds',
-      trueWindDirDeg: 25, // NE Trade Wind relative to our 090° East course -> crisp port reach!
+      trueWindDirDeg: 25,
       trueWindSpeedKts: 15,
       gustSpeedKts: 17,
       barometerHpa: 1018,
       barometerTrend: 'Steady',
       waveHeightM: 1.1,
-      oceanCurrentDirDeg: 110, // Canary Current setting ESE ~0.7 kts
+      oceanCurrentDirDeg: 110,
       oceanCurrentKts: 0.7,
       cloudCover: 0.25,
       rainIntensity: 0,
@@ -225,22 +239,66 @@ export function createInitialSimulationState(
       toName: dest.name,
       totalDistanceNm,
       distanceSailedNm: 0,
-      xNm: 2.2, // Clear of departure breakwater, open sea ahead
+      xNm: 2.2,
       zNm: 0,
       depthM: 28,
       elapsedHours: 0,
-      peakSpeedKts: 4.8,
+      peakSpeedKts: initSpeedKts,
       maxGustKts: 17,
       arrivedAtCove: false,
       voyageComplete: false,
       visitedHubIds: [origin.id],
-      monthOfYear: 11, // November trade-wind window
+      monthOfYear: 11,
       channelHazardWarning: false,
       groundingCount: 0,
       upkeepChargedDays: 0,
     },
+    distress: null,
     alertMessage: null,
     lastLogEntry: `Cleared ${origin.name} harbor mouth bound for ${dest.name} (${totalDistanceNm} NM).`,
+  };
+}
+
+/**
+ * Safely migrates persisted v1 or partial v2 localStorage payloads to current v2 SimulationState.
+ */
+export function migrateSaveState(rawParsed: unknown): SimulationState {
+  if (!rawParsed || typeof rawParsed !== 'object') {
+    return createInitialSimulationState('elan-19');
+  }
+  const parsed = rawParsed as Partial<SimulationState>;
+  const validBoatId: BoatId =
+    parsed.boatId && parsed.boatId in BOAT_SPECS ? parsed.boatId : 'elan-19';
+  const base = createInitialSimulationState(validBoatId);
+  const spec = BOAT_SPECS[validBoatId];
+  const simRealism = typeof parsed.simRealism === 'number' ? clamp(parsed.simRealism, 0, 1) : base.simRealism;
+  const profile = getRealismProfile(simRealism, spec.noGoAngleDeg);
+
+  return {
+    ...base,
+    ...parsed,
+    saveVersion: CURRENT_SAVE_VERSION,
+    boatId: validBoatId,
+    simRealism,
+    realismPreset: profile.preset,
+    surgeVelMs:
+      typeof parsed.surgeVelMs === 'number'
+        ? parsed.surgeVelMs
+        : (parsed.boatSpeedKts ?? base.boatSpeedKts) * KTS_TO_MS,
+    swayVelMs: typeof parsed.swayVelMs === 'number' ? parsed.swayVelMs : 0,
+    yawRateDegS: typeof parsed.yawRateDegS === 'number' ? parsed.yawRateDegS : 0,
+    rollVelDegS: typeof parsed.rollVelDegS === 'number' ? parsed.rollVelDegS : 0,
+    wavePitchDeg: typeof parsed.wavePitchDeg === 'number' ? parsed.wavePitchDeg : 0,
+    staysailDeployed:
+      typeof parsed.staysailDeployed === 'boolean' ? parsed.staysailDeployed : spec.hasStaysail,
+    vesselCfg: { ...base.vesselCfg, ...(parsed.vesselCfg ?? {}) },
+    electrical: { ...base.electrical, ...(parsed.electrical ?? {}) },
+    wear: { ...base.wear, ...(parsed.wear ?? {}) },
+    inventory: { ...base.inventory, ...(parsed.inventory ?? {}) },
+    anchor: { ...base.anchor, ...(parsed.anchor ?? {}) },
+    weather: { ...base.weather, ...(parsed.weather ?? {}) },
+    passage: { ...base.passage, ...(parsed.passage ?? {}) },
+    distress: parsed.distress ?? null,
   };
 }
 
@@ -265,7 +323,6 @@ export function updateWeather(
   const progressRatio = state.passage.xNm / Math.max(1, state.passage.totalDistanceNm);
   const squallMultiplier = lerp(0.55, 1.0, state.simRealism);
 
-  // Trigger squall trough near ~32%–68% of passage (or forced by user/test)
   if (
     !w.squallCleared &&
     (forceSquall || (!w.squallTriggered && progressRatio >= 0.28 && progressRatio <= 0.65))
@@ -291,18 +348,17 @@ export function updateWeather(
       w.barometerHpa = 999;
       w.cloudCover = 0.96;
       w.rainIntensity = 0.9;
-      w.trueWindSpeedKts = Math.round(lerp(24, 34, squallMultiplier));
-      w.gustSpeedKts = Math.round(lerp(28, 39, squallMultiplier));
-      w.waveHeightM = Number(lerp(2.1, 3.3, squallMultiplier).toFixed(1));
+      w.trueWindSpeedKts = lerp(24, 34, squallMultiplier);
+      w.gustSpeedKts = lerp(28, 39, squallMultiplier);
+      w.waveHeightM = lerp(2.1, 3.3, squallMultiplier);
       w.forecastText =
         'ACTIVE SQUALL: 30+ kt gusts and steep beam chop! Drop to Reef 1 or Reef 2 to protect sails and rigging.';
     }
   } else if (w.phase === 'squall') {
-    // Squall lasts ~18 NM or ~2.2 hours, then clears into brisk trades
     const gustPulse = Math.sin(state.passage.elapsedHours * 9.0) * 4.5;
     const baseSquall = lerp(24, 33, squallMultiplier);
-    w.trueWindSpeedKts = Number((baseSquall + gustPulse * 0.5).toFixed(1));
-    w.gustSpeedKts = Number((baseSquall + 5.5 + Math.abs(gustPulse)).toFixed(1));
+    w.trueWindSpeedKts = baseSquall + gustPulse * 0.5;
+    w.gustSpeedKts = baseSquall + 5.5 + Math.abs(gustPulse);
     w.rainIntensity = 0.85;
 
     if (progressRatio >= 0.66) {
@@ -324,10 +380,9 @@ export function updateWeather(
       w.barometerTrend = 'Steady';
     }
   } else {
-    // Trade winds subtle oscillation
     const breezeCycle = Math.sin(w.timeOfDayHours * 0.5) * 2.0;
-    w.trueWindSpeedKts = Number(clamp(15 + breezeCycle, 11, 21).toFixed(1));
-    w.gustSpeedKts = Number((w.trueWindSpeedKts + 2.5).toFixed(1));
+    w.trueWindSpeedKts = clamp(15 + breezeCycle, 11, 21);
+    w.gustSpeedKts = w.trueWindSpeedKts + 2.5;
     w.barometerHpa = 1018;
     w.rainIntensity = 0;
   }
@@ -342,21 +397,19 @@ export function updateElectricalAndGalley(
   const spec = BOAT_SPECS[state.boatId];
   const e = { ...state.electrical };
 
-  // Solar output peaks around solar noon (12:30) and drops with cloud cover & night
   const tod = state.weather.timeOfDayHours;
   const sunElevation = Math.max(0, Math.sin(((tod - 6) / 12) * Math.PI));
   const cloudFactor = 1 - state.weather.cloudCover * 0.75;
-  e.solarWatts = Math.round(spec.solarPeakWatts * sunElevation * cloudFactor);
+  e.solarWatts = spec.solarPeakWatts * sunElevation * cloudFactor;
 
-  // Electrical draws (Watts)
-  let draw = 4; // parasitic / regulator
+  let draw = 4;
   if (e.instruments) draw += 12;
   if (e.vhfRadio) draw += 8;
   if (e.navLights) draw += 18;
   if (e.cabinLights) draw += 10;
-  if (e.fridgeOn) draw += e.fridgeTempC > 5 ? 36 : 16; // compressor duty cycle
+  if (e.fridgeOn) draw += e.fridgeTempC > 5 ? 36 : 16;
   if (e.bilgePump) draw += 28;
-  if (state.autopilotMode === 'compass') draw += 26; // electric tillerpilot draws power; windvane draws 0!
+  if (state.autopilotMode === 'compass') draw += 26;
   e.drawWatts = draw;
 
   const netWatts = e.solarWatts - e.drawWatts;
@@ -365,29 +418,25 @@ export function updateElectricalAndGalley(
   e.batteryAh = clamp(e.batteryAh + deltaAh, 0, effectiveCap);
 
   const soc = e.batteryAh / Math.max(1, effectiveCap);
-  e.voltage = Number((11.1 + soc * 2.1 + (e.solarWatts > e.drawWatts ? 0.6 : 0)).toFixed(2));
+  e.voltage = 11.1 + soc * 2.1 + (e.solarWatts > e.drawWatts ? 0.6 : 0);
 
-  // Auto-shed non-essential loads if battery critically empty
   if (e.batteryAh <= 0.5) {
     e.fridgeOn = false;
     e.cabinLights = false;
     e.instruments = false;
   }
 
-  // Fridge temperature & provisions preservation
   const fridgeHealth = clamp(state.wear.fridge / 100, 0.3, 1.0);
   if (e.fridgeOn && e.batteryAh > 0.5) {
     const targetTemp = lerp(7.0, 3.2, fridgeHealth);
-    e.fridgeTempC = Number(lerp(e.fridgeTempC, targetTemp, clamp(simHoursDelta * 1.4, 0, 1)).toFixed(1));
+    e.fridgeTempC = lerp(e.fridgeTempC, targetTemp, clamp(simHoursDelta * 1.4, 0, 1));
   } else {
-    // Warms up toward ambient 24°C
-    e.fridgeTempC = Number(lerp(e.fridgeTempC, 24.0, clamp(simHoursDelta * 0.35, 0, 1)).toFixed(1));
+    e.fridgeTempC = lerp(e.fridgeTempC, 24.0, clamp(simHoursDelta * 0.35, 0, 1));
   }
 
-  // Daily consumption + spoilage if fridge gets warm (> 10°C)
   const spoilageMultiplier = e.fridgeTempC > 10 ? 2.1 : 1.0;
-  e.provisionsDays = Math.max(0, Number((e.provisionsDays - (simHoursDelta / 24) * spoilageMultiplier).toFixed(2)));
-  e.waterLiters = Math.max(0, Number((e.waterLiters - (simHoursDelta / 24) * 3.5).toFixed(1)));
+  e.provisionsDays = Math.max(0, e.provisionsDays - (simHoursDelta / 24) * spoilageMultiplier);
+  e.waterLiters = Math.max(0, e.waterLiters - (simHoursDelta / 24) * 3.5);
 
   return e;
 }
@@ -397,13 +446,12 @@ export function updateAnchorAndTide(
   simHoursDelta: number,
   xNm: number,
   zNm: number,
-  depthM: number,
+  _depthM: number,
 ): { anchor: SimulationState['anchor']; xNm: number; zNm: number; headingDeg: number } {
   const a = { ...state.anchor };
 
-  // 12.42-hour semidiurnal tidal cycle
   const tideCycleRad = (state.passage.elapsedHours / 12.42) * Math.PI * 2;
-  a.tideHeightM = Number((Math.sin(tideCycleRad) * 1.15).toFixed(2));
+  a.tideHeightM = Math.sin(tideCycleRad) * 1.15;
   const tideSlope = Math.cos(tideCycleRad);
 
   if (Math.abs(tideSlope) < 0.18) {
@@ -412,15 +460,13 @@ export function updateAnchorAndTide(
     a.tidePhaseLabel = tideSlope > 0 ? 'Flooding' : 'Ebbing';
   }
 
-  // Tidal stream reverses 180° between flood (075°) and ebb (255°)
   a.tidalCurrentDeg = tideSlope >= 0 ? 75 : 255;
-  a.tidalCurrentKts = Number((Math.abs(tideSlope) * 1.4).toFixed(2));
+  a.tidalCurrentKts = Math.abs(tideSlope) * 1.4;
 
   if (!a.deployed) {
     return { anchor: a, xNm, zNm, headingDeg: state.headingDeg };
   }
 
-  // Scope ratio = rode / (depth + tideHeight + bowHeight(1.2m))
   const totalVerticalM = Math.max(2, a.depthAtAnchorM + a.tideHeightM + 1.2);
   const scopeRatio = a.rodeLengthM / totalVerticalM;
   const windLoad = state.weather.trueWindSpeedKts / 25;
@@ -428,7 +474,6 @@ export function updateAnchorAndTide(
   a.holdingFactor = clamp(scopeRatio / requiredScope, 0.25, 1.0);
   a.dragging = a.holdingFactor < 0.68 && state.weather.trueWindSpeedKts > 20;
 
-  // Compute combined wind + tidal current vector to determine boat's swing heading & arc
   const windToRad = degToRad(state.weather.trueWindDirDeg + 180);
   const tideToRad = degToRad(a.tidalCurrentDeg);
   const wx = Math.sin(windToRad) * (state.weather.trueWindSpeedKts * 0.08);
@@ -441,11 +486,9 @@ export function updateAnchorAndTide(
   const targetSwingRad = Math.atan2(netVx, -netVz);
   const targetSwingDeg = normalizeAngle360(radToDeg(targetSwingRad));
 
-  // Smoothly swing boat around anchor on rode arc
   const diff = normalizeAngle180(targetSwingDeg - a.swingAngleDeg);
   a.swingAngleDeg = normalizeAngle360(a.swingAngleDeg + diff * clamp(simHoursDelta * 1.8, 0, 1));
 
-  // Position boat at rode radius (in NM, 1 NM = 1852m) along swing vector
   const scopeRadiusNm = Math.max(0.015, a.rodeLengthM / 1852);
   let nextAnchorLatNm = a.anchorLatNm;
   let nextAnchorLonNm = a.anchorLonNm;
@@ -462,8 +505,6 @@ export function updateAnchorAndTide(
   const swingRad = degToRad(a.swingAngleDeg);
   const nextX = nextAnchorLonNm + Math.sin(swingRad) * scopeRadiusNm;
   const nextZ = nextAnchorLatNm - Math.cos(swingRad) * scopeRadiusNm;
-
-  // Bow faces INTO the anchor rode (180° opposite swing angle)
   const bowToAnchorDeg = normalizeAngle360(a.swingAngleDeg + 180);
 
   return {
@@ -475,30 +516,41 @@ export function updateAnchorAndTide(
 }
 
 /**
- * Advances the entire sailing simulation by `dtSeconds` (real frame seconds).
- * Note: At 1x timeCompression, 1 real second advances ~36 sim seconds (0.01 sim hours)
- * so a 100 NM passage flows meditatively yet reaches squalls and landfall within minutes,
- * and 10x / 60x or Sleep/Watch lets the player cross ocean legs smoothly.
+ * Single fixed-timestep (`dt <= FIXED_PHYSICS_DT`) 4-DOF Newton-Euler integration step.
+ * Keeps all physics quantities at full floating-point precision (never rounded inside physics).
  */
-export function stepSimulation(
+function stepFixedSubstep(
   prev: SimulationState,
-  dtSeconds: number,
+  dt: number,
   controls?: { rudderInput?: number; forceSquall?: boolean },
 ): SimulationState {
-  const dt = clamp(dtSeconds, 0, 0.05);
-  // Base rate: 1x = 0.008 sim hours/sec (~29s per 0.23h), 10x = 0.08, 60x = 0.48
+  // Base rate: 1x = 0.008 sim hours/sec, 10x = 0.08, 60x = 0.48
   const simHoursDelta = dt * 0.008 * prev.timeCompression;
   const spec = BOAT_SPECS[prev.boatId];
+  const cfg = prev.vesselCfg ?? spec.defaultCfg;
+  const profile = getRealismProfile(prev.simRealism, spec.noGoAngleDeg);
+
+  // If distress recovery dialog is active, freeze vessel motion until player chooses recovery
+  if (prev.distress?.active) {
+    return prev;
+  }
 
   const weather = updateWeather(prev, simHoursDelta, controls?.forceSquall);
-  const depthM = computeDepthAtPassage(prev.passage.xNm, prev.passage.zNm, prev.passage.totalDistanceNm);
+  const depthM = computeDepthAtPassage(
+    prev.passage.xNm,
+    prev.passage.zNm,
+    prev.passage.totalDistanceNm,
+  );
 
-  // Rudder & Autopilot handling
-  let rudderAngleDeg = prev.rudderAngleDeg;
-  let headingDeg = prev.headingDeg;
-
+  // Anchored physics branch
   if (prev.anchor.deployed) {
-    const anchored = updateAnchorAndTide(prev, simHoursDelta, prev.passage.xNm, prev.passage.zNm, depthM);
+    const anchored = updateAnchorAndTide(
+      prev,
+      simHoursDelta,
+      prev.passage.xNm,
+      prev.passage.zNm,
+      depthM,
+    );
     const { awaDeg, awsKts } = computeApparentWind(
       anchored.headingDeg,
       0,
@@ -509,17 +561,22 @@ export function stepSimulation(
 
     return {
       ...prev,
+      realismPreset: profile.preset,
       headingDeg: anchored.headingDeg,
       cogDeg: anchored.headingDeg,
+      surgeVelMs: 0,
+      swayVelMs: 0,
+      yawRateDegS: 0,
+      rollVelDegS: 0,
       boatSpeedKts: 0,
       sogKts: 0,
       sailLiftN: 0,
       sailDragN: 0,
       maneuverState: 'sailing',
-      heelDeg: Number((Math.sin(degToRad(awaDeg)) * (awsKts / 25) * 4).toFixed(1)),
-      apparentWindAngleDeg: Number(awaDeg.toFixed(1)),
-      apparentWindSpeedKts: Number(awsKts.toFixed(1)),
-      pointOfSail: classifyPointOfSail(Math.abs(awaDeg), spec.noGoAngleDeg),
+      heelDeg: Math.sin(degToRad(awaDeg)) * (awsKts / 25) * 4,
+      apparentWindAngleDeg: awaDeg,
+      apparentWindSpeedKts: awsKts,
+      pointOfSail: classifyPointOfSail(Math.abs(awaDeg), profile.noGoDeg),
       electrical,
       weather,
       anchor: anchored.anchor,
@@ -537,44 +594,153 @@ export function stepSimulation(
     };
   }
 
-  // Active sailing steering
+  // 1. Rudder & Autopilot Steering
+  let rudderAngleDeg = prev.rudderAngleDeg;
   const rudderInput = controls?.rudderInput ?? 0;
   if (Math.abs(rudderInput) > 0.01) {
-    rudderAngleDeg = clamp(rudderAngleDeg + rudderInput * 55 * dt, -35, 35);
+    rudderAngleDeg = clamp(rudderAngleDeg + rudderInput * 58 * dt, -35, 35);
   } else if (prev.autopilotMode === 'windvane') {
-    // Windvane holds Apparent Wind Angle constant!
     const awaError = normalizeAngle180(prev.apparentWindAngleDeg - prev.autopilotTargetDeg);
-    rudderAngleDeg = clamp(awaError * 0.55, -22, 22);
+    rudderAngleDeg = clamp(awaError * 0.55 - prev.yawRateDegS * 0.45, -24, 24);
   } else if (prev.autopilotMode === 'compass') {
-    const hdgError = normalizeAngle180(prev.autopilotTargetDeg - headingDeg);
-    rudderAngleDeg = clamp(hdgError * 0.6, -24, 24);
+    const hdgError = normalizeAngle180(prev.autopilotTargetDeg - prev.headingDeg);
+    rudderAngleDeg = clamp(hdgError * 0.65 - prev.yawRateDegS * 0.5, -26, 26);
   } else {
-    // Natural self-centering rudder return
     rudderAngleDeg = lerp(rudderAngleDeg, 0, clamp(dt * 2.2, 0, 1));
   }
 
-  // Rudder turn rate depends on boat speed, rudder area (boat.cfg), & rudder health
-  const rudderAreaRatio = clamp((prev.vesselCfg?.rudderAreaM2 ?? spec.defaultCfg.rudderAreaM2) / spec.defaultCfg.rudderAreaM2, 0.6, 1.6);
-  const rudderAuthority =
-    clamp(prev.boatSpeedKts / 2.2, 0.25, 1.2) *
-    rudderAreaRatio *
-    lerp(0.5, 1.0, prev.wear.rudder / 100);
-  headingDeg = normalizeAngle360(headingDeg + rudderAngleDeg * rudderAuthority * dt * 0.85);
-
+  // 2. Apparent Wind from current integrated velocity
   const { awaDeg, awsKts } = computeApparentWind(
-    headingDeg,
+    prev.headingDeg,
     prev.boatSpeedKts,
     weather.trueWindDirDeg,
     weather.trueWindSpeedKts,
   );
 
-  const forces = solveFoilAndManeuver(prev, awaDeg, awsKts);
-  const speedDamp = clamp(dt * 1.4, 0, 1);
-  const boatSpeedKts = Number(lerp(prev.boatSpeedKts, forces.targetSpeedKts, speedDamp).toFixed(2));
-  const heelDeg = Number(lerp(prev.heelDeg, forces.targetHeelDeg, clamp(dt * 2.4, 0, 1)).toFixed(1));
+  // 3. Evaluate Sail Foil & Hydrodynamic Parameters
+  const waveCyclePhase = prev.passage.elapsedHours * 4.2;
+  const forces = solveFoilAndManeuver(prev, awaDeg, awsKts, waveCyclePhase);
 
-  // Position integration in NM: STW + Leeway + Ocean Current + Coastal Tidal Stream -> SOG & COG (Virtual Sailor NG)
-  const trackHeadingRad = degToRad(headingDeg + forces.leewayDeg);
+  // 4. True 4-DOF Rigid-Body Momentum Integration
+  // Note: timeScale boosts physical acceleration slightly during 10x/60x time compression so momentum responds smoothly without multi-step instability
+  const effMassKg = cfg.massKg * 1.08;
+  const u = prev.surgeVelMs;
+  const v = prev.swayVelMs;
+
+  // Surge resistance: Delft residuary wave-making + ITTC-57 viscous friction + heeled wetted correction + hullF fouling
+  const wearFactors = evaluateWearFactors(prev.wear);
+  const lengthScale = cfg.boatLengthM / Math.max(1, spec.defaultCfg.boatLengthM);
+  const wettedScale = cfg.wingSurDragM2 / Math.max(0.2, spec.defaultCfg.wingSurDragM2);
+  const hullFouling = wearFactors.hullDragMult;
+  const delftDrag = evaluateHullResistance(
+    prev.boatId,
+    spec.delftHull,
+    u,
+    prev.heelDeg,
+    spec.keelType,
+    lengthScale,
+    wettedScale,
+    hullFouling,
+    true,
+  );
+  const overpowerDragMult = forces.isOverpowered
+    ? 1 + (Math.abs(prev.heelDeg) - spec.maxSafeHeelDeg) * 0.04
+    : 1.0;
+  const rudRad = degToRad(rudderAngleDeg);
+  const turningDragN =
+    0.5 * WATER_RHO * cfg.rudderAreaM2 * 2.2 * Math.sin(rudRad) * Math.sin(rudRad) * (u * u + 0.5) +
+    Math.abs(prev.yawRateDegS) * cfg.massKg * 0.015;
+
+  const rSurgeN =
+    delftDrag.totalDragN * overpowerDragMult * Math.sign(u || 1) +
+    forces.waveSlamDragN +
+    turningDragN * Math.sign(u || 1);
+
+  const fNetSurgeN = forces.fDriveN + forces.waveSurfPushN - rSurgeN;
+  // Scale physical time integration slightly for 1x responsiveness while preserving vessel mass inertia hierarchy
+  const physAccelTimeScale = prev.timeCompression === 1 ? 1.85 : 2.6;
+  const nextSurgeVelMs = clamp(
+    u + (fNetSurgeN / effMassKg) * dt * physAccelTimeScale,
+    -0.65,
+    forces.hullSpeedMs * 1.24,
+  );
+
+  // Sway (lateral leeway) equation: Sail side force vs. Keel hydrodynamic lateral resistance
+  const swayMassKg = cfg.massKg * 1.48;
+  const uFlowMs = Math.max(0.65, Math.abs(nextSurgeVelMs));
+  const keelLatResistanceN =
+    0.5 * WATER_RHO * uFlowMs * cfg.keelAreaM2 * 4.6 * v +
+    0.5 * WATER_RHO * cfg.wingSurDragM2 * 0.65 * v * Math.abs(v);
+  const fNetSwayN = forces.fLatSignedN - keelLatResistanceN;
+  const nextSwayVelMs = clamp(
+    v + (fNetSwayN / swayMassKg) * dt * physAccelTimeScale,
+    -1.6,
+    1.6,
+  );
+
+  // Yaw rotational dynamics: Rudder hydrodynamic torque + subtle weather helm - keel yaw damping
+  const rudderAreaRatio = clamp(cfg.rudderAreaM2 / spec.defaultCfg.rudderAreaM2, 0.5, 1.8);
+  const rudderHealth = lerp(0.5, 1.0, prev.wear.rudder / 100);
+  const rudderFlowFactor = clamp(Math.abs(nextSurgeVelMs) / 1.35, 0.16, 1.35);
+  const lengthAgility = clamp(8.5 / cfg.boatLengthM, 0.68, 1.35);
+  const yawInertia = Math.max(1200, cfg.massKg * cfg.boatLengthM * cfg.boatLengthM * 0.085);
+  const turnTorque =
+    rudderAngleDeg * rudderFlowFactor * rudderAreaRatio * rudderHealth * lengthAgility * yawInertia * 0.96;
+  const weatherHelmDeg =
+    profile.preset !== 'arcade' && Math.abs(prev.heelDeg) > 16
+      ? -Math.sign(prev.heelDeg) * (Math.abs(prev.heelDeg) - 16) * 0.14
+      : 0;
+  const weatherHelmTorque = weatherHelmDeg * yawInertia * 0.9;
+  const yawDampingTorque = prev.yawRateDegS * yawInertia * 2.6;
+  const nextYawRateDegS = clamp(
+    prev.yawRateDegS + ((turnTorque + weatherHelmTorque - yawDampingTorque) / yawInertia) * dt * physAccelTimeScale,
+    -38,
+    38,
+  );
+  const yawStepScale = prev.autopilotMode !== 'manual' ? clamp(Math.sqrt(prev.timeCompression), 1, 4) : 1;
+  const headingDeg = normalizeAngle360(prev.headingDeg + nextYawRateDegS * dt * yawStepScale);
+
+  // Roll / Heel 2nd-order rotational dynamics: M_heel * cos(phi)^k - M_GZ(phi) - c * phi_dot
+  const heelRad = degToRad(prev.heelDeg);
+  const rollInertia = Math.max(450, cfg.massKg * spec.deckBeamM * spec.deckBeamM * 0.14);
+  const stabilityScale = cfg.stabilityBody / Math.max(0.1, spec.defaultCfg.stabilityBody);
+  const rightingTorqueNm = computeGzRightingMomentNm(
+    cfg.massKg,
+    prev.heelDeg,
+    spec.gzCurve,
+    stabilityScale,
+  );
+  const effectiveHeelingNm =
+    forces.heelingTorqueNm *
+    Math.pow(Math.max(0.25, Math.cos(heelRad)), HYDRO_TUNING.heelAerodynamicCosExp);
+  const rollDampingNm = prev.rollVelDegS * rollInertia * 0.082;
+  const netRollTorqueNm = effectiveHeelingNm - rightingTorqueNm - rollDampingNm;
+  const nextRollVelDegS = clamp(
+    prev.rollVelDegS + radToDeg(netRollTorqueNm / rollInertia) * dt * 2.2,
+    -55,
+    55,
+  );
+  const nextHeelDeg = clamp(
+    prev.heelDeg + nextRollVelDegS * dt * 2.2,
+    -profile.forgivingHeelCapDeg,
+    profile.forgivingHeelCapDeg,
+  );
+
+  const boatSpeedKts = Math.max(0, nextSurgeVelMs * MS_TO_KTS);
+  const leewayRad = Math.atan2(nextSwayVelMs, Math.max(0.35, Math.abs(nextSurgeVelMs)));
+  const leewayDeg =
+    Math.abs(awaDeg) < 125 && boatSpeedKts > 0.25
+      ? clamp(radToDeg(leewayRad) * profile.leewayScale, -14, 14)
+      : 0;
+
+  // Dynamic wave pitch (centralized "guess" swell encounter constants)
+  const wavePitchDeg =
+    Math.sin(waveCyclePhase * HYDRO_TUNING.wavePitchFreqMult) *
+    ((HYDRO_TUNING.wavePitchBaseDeg + weather.waveHeightM * HYDRO_TUNING.wavePitchPerMeterDeg) /
+      Math.max(0.5, cfg.pitchDampening));
+
+  // 5. Position Integration in NM: STW + Leeway + Ocean Current + Coastal Tidal Stream
+  const trackHeadingRad = degToRad(headingDeg + leewayDeg);
   const coastalTideFactor = depthM < 40 ? 0.35 : 0.05;
   const tideRad = degToRad(prev.anchor.tidalCurrentDeg);
   const currentRad = degToRad(weather.oceanCurrentDirDeg);
@@ -588,28 +754,40 @@ export function stepSimulation(
     Math.cos(currentRad) * weather.oceanCurrentKts -
     Math.cos(tideRad) * prev.anchor.tidalCurrentKts * coastalTideFactor;
 
-  const sogKts = Number(Math.hypot(velX, velZ).toFixed(2));
-  const cogDeg = sogKts > 0.15 ? Number(normalizeAngle360(radToDeg(Math.atan2(velX, -velZ))).toFixed(1)) : headingDeg;
+  const sogKts = Math.hypot(velX, velZ);
+  const cogDeg = sogKts > 0.15 ? normalizeAngle360(radToDeg(Math.atan2(velX, -velZ))) : headingDeg;
 
   const distNmStep = boatSpeedKts * simHoursDelta;
   const nextX = prev.passage.xNm + velX * simHoursDelta;
   const nextZ = prev.passage.zNm + velZ * simHoursDelta;
   const nextDepthM = computeDepthAtPassage(nextX, nextZ, prev.passage.totalDistanceNm);
 
-  // Wear & maintenance degradation scaled by realism slider + Tiller accidental gybe shock
-  const wearScale = lerp(0.2, 1.0, prev.simRealism);
+  // 6. Wear & Maintenance Degradation + Equipment Chaining
+  const wearScale = profile.wearRateScale;
   const nextWear = { ...prev.wear };
   const overpowerPenalty = forces.isOverpowered ? 3.8 : 0.12;
   const luffingPenalty = forces.isLuffing ? 1.4 : 0;
   const gybeMainShock = forces.accidentalGybeSlam ? 4.5 * wearScale : 0;
   const gybeRigShock = forces.accidentalGybeSlam ? 3.8 * wearScale : 0;
 
-  nextWear.mainsail = Math.max(10, nextWear.mainsail - (overpowerPenalty + luffingPenalty) * simHoursDelta * wearScale - gybeMainShock);
-  nextWear.rigging = Math.max(15, nextWear.rigging - (forces.isOverpowered ? 2.4 : 0.08) * simHoursDelta * wearScale - gybeRigShock);
-  nextWear.hull = Math.max(20, nextWear.hull - 0.07 * simHoursDelta * wearScale);
-  nextWear.rudder = Math.max(20, nextWear.rudder - (Math.abs(rudderAngleDeg) > 20 ? 0.35 : 0.06) * simHoursDelta * wearScale);
+  nextWear.mainsail = Math.max(
+    5,
+    nextWear.mainsail - (overpowerPenalty + luffingPenalty) * simHoursDelta * wearScale - gybeMainShock,
+  );
+  const riggingFatigueMult = weather.trueWindSpeedKts > 22 ? wearFactors.riggingFatigueMult : 1.0;
+  nextWear.rigging = Math.max(
+    5,
+    nextWear.rigging -
+      (forces.isOverpowered ? 2.4 : 0.08) * simHoursDelta * wearScale * riggingFatigueMult -
+      gybeRigShock,
+  );
+  nextWear.hull = Math.max(5, nextWear.hull - 0.07 * simHoursDelta * wearScale);
+  nextWear.rudder = Math.max(
+    10,
+    nextWear.rudder - (Math.abs(rudderAngleDeg) > 20 ? 0.35 : 0.06) * simHoursDelta * wearScale,
+  );
 
-  // Ship Happens harbor channel shoal & grounding check
+  // Harbor channel shoal & grounding check
   let coins = prev.inventory.coins;
   let totalRunningCostsCr = prev.inventory.totalRunningCostsCr;
   let groundingCount = prev.passage.groundingCount;
@@ -618,17 +796,17 @@ export function stepSimulation(
 
   if (nextDepthM < 2.2 && !prev.anchor.deployed && boatSpeedKts > 1.2) {
     groundedThisTick = true;
-    nextWear.hull = Math.max(15, nextWear.hull - 6.5 * wearScale);
+    nextWear.hull = Math.max(5, nextWear.hull - 6.5 * wearScale);
     groundingCount += 1;
   }
 
-  // Ship Happens daily upkeep & insurance deduction on elapsed voyage days
-  const nextElapsedHours = Number((prev.passage.elapsedHours + simHoursDelta).toFixed(2));
+  // Daily upkeep deduction
+  const nextElapsedHours = prev.passage.elapsedHours + simHoursDelta;
   const totalWholeDays = Math.floor(nextElapsedHours / 24);
   let upkeepChargedDays = prev.passage.upkeepChargedDays;
   if (totalWholeDays > upkeepChargedDays) {
     const newDays = totalWholeDays - upkeepChargedDays;
-    const dailyCost = prev.vesselCfg?.dailyUpkeepCr ?? spec.defaultCfg.dailyUpkeepCr;
+    const dailyCost = cfg.dailyUpkeepCr ?? spec.defaultCfg.dailyUpkeepCr;
     const charge = newDays * dailyCost;
     coins = Math.max(0, coins - charge);
     totalRunningCostsCr += charge;
@@ -637,8 +815,56 @@ export function stepSimulation(
 
   const electrical = updateElectricalAndGalley(prev, simHoursDelta);
 
+  // Non-fatal failure recovery check (GDD §4: Coastguard Tow / Jury-Rig Harbor Recovery)
+  // Standing rigging failure probability escalates nonlinearly as rigF declines under heavy loads
+  const rigFailureHourlyChance = computeRiggingFailureChance(
+    nextWear.rigging,
+    weather.trueWindSpeedKts,
+    forces.isOverpowered,
+    forces.accidentalGybeSlam,
+  );
+  const rigLoadParted =
+    nextWear.rigging < 24 &&
+    (forces.isOverpowered || forces.accidentalGybeSlam) &&
+    rigFailureHourlyChance > 0.35;
+
+  let distress: DistressRecoveryState | null = prev.distress;
+  if (!distress && profile.preset !== 'arcade') {
+    if (nextWear.rigging <= WEAR_TUNING.rigCriticalPartingPct || rigLoadParted) {
+      distress = {
+        active: true,
+        cause: 'rigging-failure',
+        title: 'Dismasting Risk — Standing Rigging Parted',
+        description:
+          'Extreme rigging fatigue forced an emergency jury-rig under bare poles. Accept a Coastguard tow & emergency splice to recover safely.',
+        towCostCr: Math.round(spec.defaultCfg.dailyUpkeepCr * 4.5),
+        timePenaltyHours: 14,
+      };
+    } else if (nextWear.hull <= 12) {
+      distress = {
+        active: true,
+        cause: 'hull-breach',
+        title: 'Critical Hull Damage — Bilges Flooding',
+        description:
+          'Repeated shoal grounding strained hull planking. Coastguard salvage pump & haul-out repair will stabilize the vessel.',
+        towCostCr: Math.round(spec.defaultCfg.dailyUpkeepCr * 5.0),
+        timePenaltyHours: 18,
+      };
+    } else if (electrical.provisionsDays <= 0 || electrical.waterLiters <= 0) {
+      distress = {
+        active: true,
+        cause: 'provisions-depleted',
+        title: 'Galley & Fresh Water Depleted',
+        description:
+          'Fresh water tanks or sea stores ran dry offshore. Request an emergency supply drop from a passing freighter or patrol cutter.',
+        towCostCr: 95,
+        timePenaltyHours: 8,
+      };
+    }
+  }
+
   const distToDest = Math.hypot(prev.passage.totalDistanceNm - nextX, nextZ);
-  const arrivedAtCove = distToDest <= 2.5 || nextX >= prev.passage.totalDistanceNm - 1.5;
+  const arrivedAtCove = distToDest <= 2.2;
 
   let alertMessage: string | null = null;
   if (groundedThisTick) {
@@ -655,21 +881,32 @@ export function stepSimulation(
     alertMessage = 'Barometer falling rapidly — squall front approaching.';
   } else if (electrical.batteryAh / electrical.batteryCapacityAh < 0.2) {
     alertMessage = 'House battery low (<20%) — shed fridge or lights to preserve instruments.';
+  } else if (electrical.fridgeTempC > 10 && electrical.provisionsDays > 0) {
+    alertMessage = 'Galley fridge warm (>10°C) — sea provisions spoiling 2.1× faster!';
+  } else if (nextWear.rigging < 35) {
+    alertMessage = `Standing rigging worn (${Math.round(nextWear.rigging)}%) — splice at chandlery to prevent failure.`;
   } else if (arrivedAtCove && !prev.passage.arrivedAtCove) {
     alertMessage = `Landfall! Entered ${prev.passage.toName} sheltered anchorage. Keep clear of shoals & drop anchor.`;
   }
 
   return {
     ...prev,
-    headingDeg: Number(headingDeg.toFixed(1)),
+    realismPreset: profile.preset,
+    headingDeg,
     cogDeg,
-    rudderAngleDeg: Number(rudderAngleDeg.toFixed(1)),
+    rudderAngleDeg,
+    surgeVelMs: nextSurgeVelMs,
+    swayVelMs: nextSwayVelMs,
+    yawRateDegS: nextYawRateDegS,
+    rollVelDegS: nextRollVelDegS,
+    wavePitchDeg,
     boatSpeedKts,
     sogKts,
-    leewayDeg: forces.leewayDeg,
-    heelDeg,
-    apparentWindAngleDeg: Number(awaDeg.toFixed(1)),
-    apparentWindSpeedKts: Number(awsKts.toFixed(1)),
+    leewayDeg,
+    heelDeg: nextHeelDeg,
+    pitchDeg: wavePitchDeg,
+    apparentWindAngleDeg: awaDeg,
+    apparentWindSpeedKts: awsKts,
     pointOfSail: forces.pointOfSail,
     tackSide: forces.tackSide,
     boomSide: forces.boomSide,
@@ -694,7 +931,7 @@ export function stepSimulation(
       xNm: nextX,
       zNm: nextZ,
       depthM: nextDepthM,
-      distanceSailedNm: Number((prev.passage.distanceSailedNm + distNmStep).toFixed(2)),
+      distanceSailedNm: prev.passage.distanceSailedNm + distNmStep,
       elapsedHours: nextElapsedHours,
       peakSpeedKts: Math.max(prev.passage.peakSpeedKts, boatSpeedKts),
       maxGustKts: Math.max(prev.passage.maxGustKts, weather.gustSpeedKts),
@@ -703,6 +940,7 @@ export function stepSimulation(
       groundingCount,
       upkeepChargedDays,
     },
+    distress,
     alertMessage,
     lastLogEntry: forces.accidentalGybeSlam
       ? 'Accidental gybe slammed boom across cockpit.'
@@ -711,9 +949,100 @@ export function stepSimulation(
 }
 
 /**
+ * Advances the simulation using deterministic fixed-timestep (`FIXED_PHYSICS_DT = 1/60s`) substeps.
+ */
+export function stepSimulation(
+  prev: SimulationState,
+  dtSeconds: number,
+  controls?: { rudderInput?: number; forceSquall?: boolean },
+): SimulationState {
+  const clampedDt = clamp(dtSeconds, 0, 0.25);
+  if (clampedDt <= 0) return prev;
+
+  const substeps = Math.max(1, Math.round(clampedDt / FIXED_PHYSICS_DT));
+  const stepDt = clampedDt / substeps;
+  let current = prev;
+  for (let i = 0; i < substeps; i++) {
+    current = stepFixedSubstep(current, stepDt, i === 0 ? controls : { rudderInput: controls?.rudderInput });
+  }
+  return current;
+}
+
+/**
+ * Frame-rate independent fixed-timestep accumulator for the live 3D render loop.
+ */
+export function stepSimulationWithAccumulator(
+  prev: SimulationState,
+  accumRef: { current: number },
+  rawDtSeconds: number,
+  controls?: { rudderInput?: number; forceSquall?: boolean },
+): SimulationState {
+  accumRef.current = Math.min(accumRef.current + clamp(rawDtSeconds, 0, 0.1), FIXED_PHYSICS_DT * 6);
+  let current = prev;
+  let first = true;
+  while (accumRef.current >= FIXED_PHYSICS_DT) {
+    current = stepFixedSubstep(
+      current,
+      FIXED_PHYSICS_DT,
+      first ? controls : { rudderInput: controls?.rudderInput },
+    );
+    accumRef.current -= FIXED_PHYSICS_DT;
+    first = false;
+  }
+  return current;
+}
+
+/**
+ * Resolves a non-fatal emergency recovery (Coastguard tow / jury-rig / supply drop)
+ * without wiping player progress.
+ */
+export function resolveDistressRecovery(prev: SimulationState): SimulationState {
+  if (!prev.distress) return prev;
+  const spec = BOAT_SPECS[prev.boatId];
+  const d = prev.distress;
+  const paid = Math.min(prev.inventory.coins, d.towCostCr);
+
+  return {
+    ...prev,
+    inventory: {
+      ...prev.inventory,
+      coins: prev.inventory.coins - paid,
+      totalRunningCostsCr: prev.inventory.totalRunningCostsCr + paid,
+    },
+    wear: {
+      ...prev.wear,
+      rigging: d.cause === 'rigging-failure' ? Math.max(prev.wear.rigging, 68) : prev.wear.rigging,
+      hull: d.cause === 'hull-breach' ? Math.max(prev.wear.hull, 68) : prev.wear.hull,
+    },
+    electrical: {
+      ...prev.electrical,
+      provisionsDays:
+        d.cause === 'provisions-depleted'
+          ? Math.max(prev.electrical.provisionsDays, 4)
+          : prev.electrical.provisionsDays,
+      waterLiters:
+        d.cause === 'provisions-depleted'
+          ? Math.max(prev.electrical.waterLiters, Math.round(spec.waterTankLiters * 0.5))
+          : prev.electrical.waterLiters,
+    },
+    passage: {
+      ...prev.passage,
+      zNm: d.cause === 'hull-breach' ? 0 : prev.passage.zNm, // Towed back into safe deep channel
+      elapsedHours: prev.passage.elapsedHours + d.timePenaltyHours,
+    },
+    reefLevel: 1,
+    surgeVelMs: 1.5,
+    boatSpeedKts: 1.5 * MS_TO_KTS,
+    distress: null,
+    alertMessage: `Recovered: ${d.title} resolved (+${d.timePenaltyHours}h elapsed, -${paid} Cr).`,
+    lastLogEntry: `Emergency assistance logged (-${paid} Cr, +${d.timePenaltyHours}h).`,
+  };
+}
+
+/**
  * Simulates sleeping / standing off-watch for up to `hours` while Windvane or Compass
  * autopilot sails the boat (or while anchored). Wakes early if squall hits, battery runs low,
- * anchor drags, or destination cove is reached.
+ * anchor drags, distress occurs, or destination cove is reached.
  */
 export function simulateWatchSleep(
   prev: SimulationState,
@@ -722,16 +1051,12 @@ export function simulateWatchSleep(
   let current = { ...prev };
   const steps = Math.max(1, Math.round(hours * 10));
   const stepSimHours = hours / steps;
-  // Convert stepSimHours back into equivalent dt at 1x compression (simHours = dt * 0.008)
   const savedCompression = current.timeCompression;
-  current.timeCompression = 1;
 
   let wokeReason = `Completed ${hours.toFixed(1)}h watch smoothly.`;
   const dtPerStep = stepSimHours / 0.008;
 
-  // Break into substeps of 0.05s or directly apply physics chunks safely
   for (let i = 0; i < steps; i++) {
-    // Run 4 micro-steps per 0.1h chunk with 60x compression equivalent
     current.timeCompression = 60;
     const microDt = clamp(dtPerStep / 60, 0.01, 0.05);
     const reps = Math.max(1, Math.round(dtPerStep / (60 * microDt)));
@@ -739,6 +1064,10 @@ export function simulateWatchSleep(
       current = stepSimulation(current, microDt);
     }
 
+    if (current.distress?.active) {
+      wokeReason = `Woken by emergency alarm: ${current.distress.title}`;
+      break;
+    }
     if (current.weather.phase === 'squall' && current.reefLevel === 0 && !current.anchor.deployed) {
       wokeReason = 'Woken by squall alarm! Wind > 28 kts — reef mainsail immediately.';
       break;
@@ -787,6 +1116,10 @@ export function deployOrRaiseAnchor(prev: SimulationState): SimulationState {
   const recommendedRode = Math.round((depth + 2) * 5);
   return {
     ...prev,
+    surgeVelMs: 0,
+    swayVelMs: 0,
+    yawRateDegS: 0,
+    rollVelDegS: 0,
     boatSpeedKts: 0,
     autopilotMode: 'manual',
     anchor: {
@@ -810,11 +1143,11 @@ export function buyChandleryItem(prev: SimulationState, itemId: string): Simulat
   const item = CHANDLERY_ITEMS.find((c) => c.id === itemId);
   if (!item || prev.inventory.coins < item.price) return prev;
 
-  const coins = prev.inventory.coins - item.price;
+  const spec = BOAT_SPECS[prev.boatId];
 
   // Consumables (provisions & water) apply immediately
   if (item.provisionsDaysAdd || item.waterLitersAdd) {
-    const spec = BOAT_SPECS[prev.boatId];
+    const coins = prev.inventory.coins - item.price;
     return {
       ...prev,
       inventory: { ...prev.inventory, coins },
@@ -822,10 +1155,10 @@ export function buyChandleryItem(prev: SimulationState, itemId: string): Simulat
         ...prev.electrical,
         provisionsDays: Math.min(
           spec.fridgeCapacityDays + 4,
-          Number((prev.electrical.provisionsDays + (item.provisionsDaysAdd ?? 0)).toFixed(1)),
+          prev.electrical.provisionsDays + (item.provisionsDaysAdd ?? 0),
         ),
         waterLiters: Math.min(
-          prev.boatId === 'elan-19' ? 75 : 260,
+          spec.waterTankLiters,
           prev.electrical.waterLiters + (item.waterLitersAdd ?? 0),
         ),
       },
@@ -833,6 +1166,17 @@ export function buyChandleryItem(prev: SimulationState, itemId: string): Simulat
     };
   }
 
+  // Enforce spare locker slot capacity
+  const usedSlots = countLockerSlotsUsed(prev.inventory.parts);
+  const itemSlots = item.lockerSlots ?? 1;
+  if (usedSlots + itemSlots > spec.spareLockerCapacity) {
+    return {
+      ...prev,
+      alertMessage: `Spare locker full (${usedSlots}/${spec.spareLockerCapacity} slots on ${spec.name}). Use parts or upgrade vessel.`,
+    };
+  }
+
+  const coins = prev.inventory.coins - item.price;
   return {
     ...prev,
     inventory: {
@@ -843,7 +1187,8 @@ export function buyChandleryItem(prev: SimulationState, itemId: string): Simulat
         [item.id]: (prev.inventory.parts[item.id] ?? 0) + 1,
       },
     },
-    lastLogEntry: `Purchased ${item.name} for spare locker.`,
+    alertMessage: null,
+    lastLogEntry: `Purchased ${item.name} for spare locker (${usedSlots + itemSlots}/${spec.spareLockerCapacity} slots).`,
   };
 }
 
@@ -863,7 +1208,7 @@ export function applySparePartRepair(
     ...prev,
     wear: {
       ...prev.wear,
-      [sys]: Math.min(100, Number((currentCond + item.repairAmount).toFixed(1))),
+      [sys]: Math.min(100, currentCond + item.repairAmount),
     },
     inventory: {
       ...prev.inventory,
@@ -959,12 +1304,13 @@ export function resetVesselCfg(prev: SimulationState): SimulationState {
 export function switchOrPurchaseBoat(prev: SimulationState, targetBoat: BoatId): SimulationState {
   if (prev.boatId === targetBoat) return prev;
   const spec = BOAT_SPECS[targetBoat];
-  // Allow free preview/upgrade if player has enough coins or switch back to Elan 19
-  const cost = targetBoat === 'rustler-36' && prev.inventory.coins >= spec.priceCoins ? spec.priceCoins : 0;
-  if (targetBoat === 'rustler-36' && prev.inventory.coins < spec.priceCoins) {
+  if (!spec) return prev;
+
+  const cost = spec.priceCoins > 0 ? spec.priceCoins : 0;
+  if (prev.inventory.coins < cost) {
     return {
       ...prev,
-      alertMessage: `Need ${spec.priceCoins} Cr to commission the Rustler 36 (complete passages to earn credits).`,
+      alertMessage: `Need ${cost} Cr to commission the ${spec.name} (complete passages & charters to earn credits).`,
     };
   }
 
@@ -972,6 +1318,7 @@ export function switchOrPurchaseBoat(prev: SimulationState, targetBoat: BoatId):
     ...prev,
     boatId: targetBoat,
     vesselCfg: { ...spec.defaultCfg },
+    staysailDeployed: spec.hasStaysail,
     inventory: {
       ...prev.inventory,
       coins: prev.inventory.coins - cost,
@@ -981,7 +1328,7 @@ export function switchOrPurchaseBoat(prev: SimulationState, targetBoat: BoatId):
       batteryCapacityAh: spec.batteryCapacityAh,
       batteryAh: spec.batteryCapacityAh * 0.9,
       provisionsDays: spec.fridgeCapacityDays,
-      waterLiters: targetBoat === 'elan-19' ? 48 : 180,
+      waterLiters: spec.waterTankLiters * 0.9,
     },
     wear: {
       mainsail: 100,

@@ -9,6 +9,7 @@ import {
   Pause,
   Radio,
   Sun,
+  Tablet,
   Volume2,
   VolumeX,
   Wind,
@@ -23,7 +24,7 @@ import type {
 } from '../types/sailing';
 import { BOAT_SPECS } from '../sim/boats';
 import { buildNmeaSentences } from '../sim/nmea';
-import { getOptimalSheetPct } from '../sim/physics';
+import { getOptimalSheetPct, getRealismProfile } from '../sim/physics';
 
 export type DockTab = 'helm' | 'weather' | 'cabin' | 'anchor';
 
@@ -32,17 +33,21 @@ interface SailingHUDProps {
   cameraMode: CameraViewMode;
   muted: boolean;
   dockCollapsed: boolean;
+  touchPadEnabled: boolean;
   hoverTooltip: { label: string; x: number; y: number } | null;
   onToggleDock: () => void;
+  onToggleTouchPad: () => void;
   onSetCameraMode: (mode: CameraViewMode) => void;
   onToggleMute: () => void;
   onPause: () => void;
   onOpenWorldChart: () => void;
   onOpenChandlery: () => void;
+  onHoldSteer: (dir: -1 | 0 | 1) => void;
   onSteerStep: (deltaDeg: number) => void;
   onSetMainsheet: (pct: number) => void;
   onSetJibsheet: (pct: number) => void;
   onToggleJib: () => void;
+  onToggleStaysail: () => void;
   onSetReef: (level: ReefLevel) => void;
   onSetSimRealism: (val: number) => void;
   onSetAutopilot: (mode: AutopilotMode) => void;
@@ -60,17 +65,21 @@ export function SailingHUD({
   cameraMode,
   muted,
   dockCollapsed,
+  touchPadEnabled,
   hoverTooltip,
   onToggleDock,
+  onToggleTouchPad,
   onSetCameraMode,
   onToggleMute,
   onPause,
   onOpenWorldChart,
   onOpenChandlery,
+  onHoldSteer,
   onSteerStep,
   onSetMainsheet,
   onSetJibsheet,
   onToggleJib,
+  onToggleStaysail,
   onSetReef,
   onSetSimRealism,
   onSetAutopilot,
@@ -89,12 +98,12 @@ export function SailingHUD({
   const batteryPct = Math.round((sim.electrical.batteryAh / Math.max(1, sim.electrical.batteryCapacityAh)) * 100);
 
   return (
-    <div className="fixed inset-0 z-10 pointer-events-none flex flex-col justify-between p-4">
+    <div className="fixed inset-0 z-10 pointer-events-none flex flex-col justify-between p-3 md:p-4">
       {/* Top Row: Compact Telemetry Strip (Left) + Utility Controls (Right) */}
-      <div className="flex items-start justify-between gap-4">
+      <div className="flex flex-wrap xl:flex-nowrap items-start justify-between gap-2.5">
         {/* Top-Left Instrument Readout */}
-        <div className="pointer-events-auto bg-slate-950/90 border border-slate-700/70 rounded-xl px-4 py-2.5 shadow-xl max-w-2xl">
-          <div className="flex flex-wrap items-center gap-x-5 gap-y-1">
+        <div className="pointer-events-auto bg-slate-950/90 border border-slate-700/70 rounded-xl px-3.5 py-2 shadow-xl max-w-2xl">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
             <div>
               <div className="text-[10px] uppercase tracking-wider text-slate-400">Vessel</div>
               <div className="text-xs font-semibold text-slate-100 whitespace-nowrap">{spec.name}</div>
@@ -152,14 +161,14 @@ export function SailingHUD({
           </div>
 
           {sim.alertMessage && (
-            <div className="mt-2 pt-1.5 border-t border-slate-800 text-xs text-amber-300 font-medium">
+            <div className="mt-1.5 pt-1.5 border-t border-slate-800 text-xs text-amber-300 font-medium">
               {sim.alertMessage}
             </div>
           )}
         </div>
 
         {/* Top-Right Camera & Utility Actions */}
-        <div className="pointer-events-auto flex flex-wrap items-center justify-end gap-2">
+        <div className="pointer-events-auto flex flex-wrap items-center justify-end gap-1.5">
           <div className="flex items-center bg-slate-950/90 border border-slate-700/70 rounded-lg p-1 gap-1">
             {(
               [
@@ -172,7 +181,7 @@ export function SailingHUD({
                 key={cam.id}
                 type="button"
                 onClick={() => onSetCameraMode(cam.id)}
-                className={`px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors whitespace-nowrap cursor-pointer ${
+                className={`min-h-[38px] lg:min-h-[40px] px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors whitespace-nowrap cursor-pointer ${
                   cameraMode === cam.id
                     ? 'bg-amber-500 text-slate-950 font-semibold'
                     : 'text-slate-300 hover:text-white hover:bg-slate-800'
@@ -187,7 +196,7 @@ export function SailingHUD({
           <button
             type="button"
             onClick={onOpenWorldChart}
-            className="px-3 py-2 rounded-lg bg-slate-950/90 hover:bg-slate-800 border border-slate-700/70 text-xs font-medium text-slate-100 whitespace-nowrap cursor-pointer"
+            className="min-h-[44px] px-3 py-2 rounded-lg bg-slate-950/90 hover:bg-slate-800 border border-slate-700/70 text-xs font-medium text-slate-100 whitespace-nowrap cursor-pointer"
           >
             <Map className="w-3.5 h-3.5 inline mr-1.5 text-amber-400" aria-hidden="true" />
             World Route
@@ -196,7 +205,7 @@ export function SailingHUD({
           <button
             type="button"
             onClick={onOpenChandlery}
-            className="px-3 py-2 rounded-lg bg-slate-950/90 hover:bg-slate-800 border border-slate-700/70 text-xs font-medium text-slate-100 whitespace-nowrap cursor-pointer"
+            className="min-h-[44px] px-3 py-2 rounded-lg bg-slate-950/90 hover:bg-slate-800 border border-slate-700/70 text-xs font-medium text-slate-100 whitespace-nowrap cursor-pointer"
           >
             <Wrench className="w-3.5 h-3.5 inline mr-1.5 text-amber-400" aria-hidden="true" />
             Chandlery
@@ -204,9 +213,24 @@ export function SailingHUD({
 
           <button
             type="button"
+            onClick={onToggleTouchPad}
+            aria-pressed={touchPadEnabled}
+            aria-label={touchPadEnabled ? 'Hide Touch Helm Pad' : 'Show Touch Helm Pad'}
+            className={`min-h-[44px] px-2.5 py-2 rounded-lg border text-xs font-medium whitespace-nowrap cursor-pointer transition-colors ${
+              touchPadEnabled
+                ? 'bg-amber-500/20 border-amber-400 text-amber-200'
+                : 'bg-slate-950/90 hover:bg-slate-800 border-slate-700/70 text-slate-300'
+            }`}
+          >
+            <Tablet className="w-3.5 h-3.5 inline mr-1" aria-hidden="true" />
+            Touch Helm
+          </button>
+
+          <button
+            type="button"
             onClick={onToggleMute}
             aria-label={muted ? 'Unmute Audio' : 'Mute Audio'}
-            className="p-2 rounded-lg bg-slate-950/90 hover:bg-slate-800 border border-slate-700/70 text-slate-200 cursor-pointer"
+            className="min-h-[44px] min-w-[44px] flex items-center justify-center p-2 rounded-lg bg-slate-950/90 hover:bg-slate-800 border border-slate-700/70 text-slate-200 cursor-pointer"
           >
             {muted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
           </button>
@@ -215,7 +239,7 @@ export function SailingHUD({
             type="button"
             onClick={onPause}
             aria-label="Pause Simulation"
-            className="p-2 rounded-lg bg-slate-950/90 hover:bg-slate-800 border border-slate-700/70 text-slate-200 cursor-pointer"
+            className="min-h-[44px] min-w-[44px] flex items-center justify-center p-2 rounded-lg bg-slate-950/90 hover:bg-slate-800 border border-slate-700/70 text-slate-200 cursor-pointer"
           >
             <Pause className="w-4 h-4" />
           </button>
@@ -234,10 +258,67 @@ export function SailingHUD({
 
       {/* Collapsible Unified Bottom Maritime Control Dock */}
       <div className="flex flex-col items-center w-full">
+        {touchPadEnabled && (
+          <div
+            className="w-full max-w-4xl flex items-center justify-between gap-3 mb-2"
+            role="group"
+            aria-label="Tablet Touch Helm Strip"
+          >
+            <div className="pointer-events-auto flex items-center gap-2 bg-slate-950/90 border border-slate-700/80 rounded-xl p-1.5 shadow-xl">
+              <button
+                type="button"
+                onPointerDown={() => onHoldSteer(-1)}
+                onPointerUp={() => onHoldSteer(0)}
+                onPointerCancel={() => onHoldSteer(0)}
+                onPointerLeave={() => onHoldSteer(0)}
+                onClick={() => onSteerStep(-3)}
+                className="min-h-[46px] min-w-[78px] px-3.5 rounded-lg bg-slate-800 active:bg-amber-500 active:text-slate-950 border border-slate-600 text-xs font-semibold text-slate-100 touch-none select-none cursor-pointer"
+              >
+                ← Port
+              </button>
+              <button
+                type="button"
+                onPointerDown={() => onHoldSteer(1)}
+                onPointerUp={() => onHoldSteer(0)}
+                onPointerCancel={() => onHoldSteer(0)}
+                onPointerLeave={() => onHoldSteer(0)}
+                onClick={() => onSteerStep(3)}
+                className="min-h-[46px] min-w-[78px] px-3.5 rounded-lg bg-slate-800 active:bg-amber-500 active:text-slate-950 border border-slate-600 text-xs font-semibold text-slate-100 touch-none select-none cursor-pointer"
+              >
+                Stbd →
+              </button>
+            </div>
+
+            <div className="pointer-events-auto flex items-center gap-2 bg-slate-950/90 border border-slate-700/80 rounded-xl p-1.5 shadow-xl">
+              <button
+                type="button"
+                onClick={() => onSetMainsheet(sim.mainsheetPct - 10)}
+                className="min-h-[46px] px-3.5 rounded-lg bg-slate-800 active:bg-sky-500 active:text-slate-950 border border-slate-600 text-xs font-semibold text-slate-100 touch-none select-none cursor-pointer"
+              >
+                Ease -
+              </button>
+              <button
+                type="button"
+                onClick={() => onSetMainsheet(sim.mainsheetPct + 10)}
+                className="min-h-[46px] px-3.5 rounded-lg bg-slate-800 active:bg-sky-500 active:text-slate-950 border border-slate-600 text-xs font-semibold text-slate-100 touch-none select-none cursor-pointer"
+              >
+                Trim +
+              </button>
+              <button
+                type="button"
+                onClick={() => onSetReef(((sim.reefLevel + 1) % 3) as ReefLevel)}
+                className="min-h-[46px] px-3.5 rounded-lg bg-amber-500/20 active:bg-amber-500 active:text-slate-950 border border-amber-400/70 text-xs font-semibold text-amber-200 touch-none select-none cursor-pointer"
+              >
+                Reef {sim.reefLevel}
+              </button>
+            </div>
+          </div>
+        )}
+
         <button
           type="button"
           onClick={onToggleDock}
-          className="pointer-events-auto mb-1.5 px-3.5 py-1 rounded-t-lg bg-slate-950/90 border border-b-0 border-slate-700/70 text-xs font-medium text-slate-300 hover:text-white flex items-center gap-1.5 cursor-pointer"
+          className="pointer-events-auto mb-1.5 min-h-[36px] px-3.5 py-1 rounded-t-lg bg-slate-950/90 border border-b-0 border-slate-700/70 text-xs font-medium text-slate-300 hover:text-white flex items-center gap-1.5 cursor-pointer"
         >
           {dockCollapsed ? (
             <>
@@ -290,11 +371,19 @@ export function SailingHUD({
               <div className="text-[11px] text-slate-400 font-mono-tabular flex items-center gap-3">
                 <span>
                   {sim.pointOfSail}
-                  {sim.maneuverState && sim.maneuverState !== 'sailing'
-                    ? ` · ${sim.maneuverState.toUpperCase()}`
-                    : ''}
+                  {sim.maneuverState && sim.maneuverState !== 'sailing' ? (
+                    <span
+                      className={
+                        sim.maneuverState === 'crash-gybe' || sim.maneuverState === 'by-the-lee'
+                          ? 'text-rose-400 font-semibold'
+                          : 'text-amber-300'
+                      }
+                    >
+                      {` · ${sim.maneuverState.replace('-', ' ').toUpperCase()}`}
+                    </span>
+                  ) : null}
                 </span>
-                <span>AoA {Math.round(sim.angleOfAttackDeg ?? 20)}° · Lift {sim.sailLiftN ?? 0}N</span>
+                <span>AoA {Math.round(sim.angleOfAttackDeg ?? 20)}° · Lift {Math.round(sim.sailLiftN ?? 0)}N</span>
                 <span>Heel {Math.abs(Math.round(sim.heelDeg))}°</span>
                 <span>Bat {batteryPct}%</span>
               </div>
@@ -371,15 +460,28 @@ export function SailingHUD({
                         <label htmlFor="jibsheet-slider" className="text-slate-300 font-medium">
                           Jib Sheet
                         </label>
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-1.5">
                           <span className="font-mono-tabular text-slate-400">{sim.jibsheetPct}%</span>
                           <button
                             type="button"
                             onClick={onToggleJib}
-                            className="px-2 py-0.5 rounded bg-slate-800 border border-slate-700 text-[11px] text-slate-200 cursor-pointer"
+                            className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[11px] text-slate-200 cursor-pointer"
                           >
-                            {sim.jibDeployed ? 'Furl Jib' : 'Unfurl Jib'}
+                            {sim.jibDeployed ? 'Furl Jib' : 'Set Jib'}
                           </button>
+                          {spec.hasStaysail && (
+                            <button
+                              type="button"
+                              onClick={onToggleStaysail}
+                              className={`px-2 py-0.5 rounded border text-[11px] cursor-pointer ${
+                                sim.staysailDeployed
+                                  ? 'bg-sky-500/20 border-sky-400 text-sky-200'
+                                  : 'bg-slate-800 hover:bg-slate-700 border-slate-700 text-slate-300'
+                              }`}
+                            >
+                              {sim.staysailDeployed ? 'Furl Stay' : 'Set Stay'}
+                            </button>
+                          )}
                         </div>
                       </div>
                       <input
@@ -395,29 +497,41 @@ export function SailingHUD({
                     </div>
                   </div>
 
-                  {/* Arcade <-> Simulation Realism Slider */}
+                  {/* Arcade <-> Simulation Realism Slider with Discrete Switches */}
                   <div className="md:col-span-3 bg-slate-900/70 border border-slate-800 rounded-lg p-3">
-                    <div className="flex items-center justify-between text-xs mb-1">
-                      <label htmlFor="realism-slider" className="font-semibold text-slate-200">
-                        Physics Mode
-                      </label>
-                      <span className="font-mono-tabular text-amber-400">
-                        {Math.round(sim.simRealism * 100)}% Sim
-                      </span>
-                    </div>
-                    <input
-                      id="realism-slider"
-                      type="range"
-                      min={0}
-                      max={100}
-                      value={Math.round(sim.simRealism * 100)}
-                      onChange={(e) => onSetSimRealism(Number(e.target.value) / 100)}
-                      className="w-full maritime-slider mb-1"
-                    />
-                    <div className="flex justify-between text-[10px] text-slate-400">
-                      <span>Arcade</span>
-                      <span>Full Simulation</span>
-                    </div>
+                    {(() => {
+                      const prof = getRealismProfile(sim.simRealism, spec.noGoAngleDeg);
+                      return (
+                        <>
+                          <div className="flex items-center justify-between gap-2 text-xs mb-1">
+                            <label htmlFor="realism-slider" className="font-semibold text-slate-200 whitespace-nowrap">
+                              Physics Mode
+                            </label>
+                            <span className="font-mono-tabular text-amber-400 whitespace-nowrap">
+                              {prof.label} ({Math.round(sim.simRealism * 100)}%)
+                            </span>
+                          </div>
+                          <input
+                            id="realism-slider"
+                            type="range"
+                            min={0}
+                            max={100}
+                            value={Math.round(sim.simRealism * 100)}
+                            onChange={(e) => onSetSimRealism(Number(e.target.value) / 100)}
+                            className="w-full maritime-slider mb-1.5"
+                          />
+                          <div className="flex justify-between text-[10px] text-slate-400 mb-1.5">
+                            <span>Arcade</span>
+                            <span>Cruising</span>
+                            <span>Full Sim</span>
+                          </div>
+                          <div className="text-[10px] text-slate-300 font-mono-tabular leading-tight border-t border-slate-800 pt-1">
+                            No-Go {prof.noGoDeg}° · {prof.autoTrimAssist ? 'Auto-Trim' : 'Manual Trim'} ·{' '}
+                            {prof.waveSlamAndSurf ? 'Wave Slam/Surf' : 'Flat Drag'}
+                          </div>
+                        </>
+                      );
+                    })()}
                   </div>
                 </div>
               )}
@@ -555,7 +669,7 @@ export function SailingHUD({
                           <span>Solar / Load</span>
                         </div>
                         <div className="font-mono-tabular text-xs font-semibold text-slate-100 mt-0.5">
-                          +{sim.electrical.solarWatts}W / -{sim.electrical.drawWatts}W
+                          +{Math.round(sim.electrical.solarWatts)}W / -{Math.round(sim.electrical.drawWatts)}W
                         </div>
                         <div className="font-mono-tabular text-[11px] text-slate-400">
                           {sim.electrical.voltage.toFixed(1)}V · {Math.round(sim.electrical.batteryAh)}Ah
@@ -563,7 +677,12 @@ export function SailingHUD({
                       </div>
 
                       <div className="bg-slate-900/80 border border-slate-800 rounded-lg p-2">
-                        <div className="text-[11px] text-slate-400">Galley Fridge</div>
+                        <div className="flex items-center justify-between text-[11px] text-slate-400">
+                          <span>Galley Fridge</span>
+                          {sim.electrical.fridgeTempC > 10 && (
+                            <span className="text-[9px] font-semibold text-red-400 uppercase">Spoiling</span>
+                          )}
+                        </div>
                         <div
                           className={`font-mono-tabular text-xs font-semibold mt-0.5 ${
                             sim.electrical.fridgeTempC > 9 ? 'text-red-400' : 'text-sky-300'
@@ -628,7 +747,14 @@ export function SailingHUD({
                     <div>
                       <div className="flex justify-between text-[11px] text-slate-400 mb-1">
                         <label htmlFor="rode-slider">Chain Rode Scope</label>
-                        <span className="font-mono-tabular text-slate-200">{sim.anchor.rodeLengthM}m</span>
+                        <span className="font-mono-tabular text-slate-200">
+                          {sim.anchor.rodeLengthM}m ·{' '}
+                          {(
+                            sim.anchor.rodeLengthM /
+                            Math.max(2, (sim.anchor.deployed ? sim.anchor.depthAtAnchorM : sim.passage.depthM) + sim.anchor.tideHeightM + 1.2)
+                          ).toFixed(1)}
+                          :1
+                        </span>
                       </div>
                       <input
                         id="rode-slider"

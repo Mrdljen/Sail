@@ -7,7 +7,7 @@ import {
   isCycloneRiskMonth,
   MONTH_NAMES,
 } from '../sim/worldHubs';
-import { BOAT_SPECS } from '../sim/boats';
+import { BOAT_ORDER, BOAT_SPECS } from '../sim/boats';
 import type { BoatId, WorldHub } from '../types/sailing';
 
 interface WorldChartModalProps {
@@ -115,7 +115,7 @@ export function WorldChartModal({
               type="button"
               onClick={onClose}
               aria-label="Close World Chart"
-              className="p-2 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors cursor-pointer"
+              className="min-h-[44px] min-w-[44px] flex items-center justify-center p-2 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors cursor-pointer"
             >
               <X className="w-5 h-5" />
             </button>
@@ -379,7 +379,7 @@ export function WorldChartModal({
                 <button
                   type="button"
                   onClick={() => setFromHub(selectedStop)}
-                  className="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 border border-slate-700 cursor-pointer"
+                  className="min-h-[44px] px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 border border-slate-700 cursor-pointer"
                 >
                   Set as Origin
                 </button>
@@ -389,7 +389,7 @@ export function WorldChartModal({
                     onLaunchPassage(fromHub, selectedStop);
                     onClose();
                   }}
-                  className="flex-1 px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold text-xs cursor-pointer"
+                  className="flex-1 min-h-[44px] px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold text-xs cursor-pointer"
                 >
                   Set Sail ({legDistanceNm} NM)
                 </button>
@@ -405,8 +405,8 @@ export function WorldChartModal({
                 </div>
                 <span className="font-mono-tabular text-xs text-amber-400">{coins} Cr</span>
               </div>
-              <div className="space-y-2">
-                {(['elan-19', 'rustler-36'] as BoatId[]).map((id) => {
+              <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                {BOAT_ORDER.map((id) => {
                   const b = BOAT_SPECS[id];
                   const isCurrent = currentBoatId === id;
                   const canAfford = coins >= b.priceCoins || isCurrent;

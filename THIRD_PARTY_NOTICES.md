@@ -1,0 +1,19 @@
+# Third-Party Notices & Reference Licenses
+
+This project ports specific algorithms and procedural ocean patterns from external repositories inspected in `/tmp/gh-refs`:
+
+1. **Leeboard / By The Lee (`bythelee`)**
+   - Source: `https://github.com/leeboardtools/bythelee`
+   - License: **Apache License 2.0** (`/tmp/gh-refs/bythelee/LICENSE`)
+   - Ported modules: Natural cubic spline (`CSpline`), `"Sail"` Cl/Cd/Cm tables, `ClCd.calcLiftDragMoment`, `Foil.calcLocalForce`, Delft residuary resistance & wetted-surface heel correction (`Delft.js`), ITTC-57 frictional drag & roughness spline (`Hull.js`, `Water.js`, `SailEnv.js`).
+
+2. **Tides of Fortune (`tides-of-fortune`)**
+   - Required Notice: Copyright 2026 silvestroz (https://github.com/silvestroz/tides-of-fortune)
+   - License: **PolyForm Noncommercial License 1.0.0** (`https://polyformproject.org/licenses/noncommercial/1.0.0`, `/tmp/gh-refs/tides-of-fortune/LICENSE.md`)
+   - Note: Use and derivative works of `tides-of-fortune` assets/patterns are licensed **for noncommercial purposes only**.
+   - Ported / inspired items: Procedural tileable ocean detail normal & cellular/FBM foam textures (`src/three/proceduralTextures.ts`, ported from `src/world/ocean/textures.js`), Gerstner Jacobian foam/Fresnel/SSS ocean shader structure (`src/three/oceanScene.ts`, inspired by `src/world/ocean/waves.js` & `oceanMaterial.js`), coiled cockpit line aesthetic (`src/three/boatBuilder.ts`), and the `hullF`/`rigF` degradation pattern (`src/ships/ship.js:L158-159`) adapted with Meridian Passage's own `Cl`/extra-`Cd`/failure-risk equations.
+
+3. **Tiller (`tiller`)**
+   - Source: `https://github.com/mblode/tiller`
+   - License status audited: **No open-source license file** (`package.json` declares `"private": true`; `README.md` states *"A private project, built for the joy of it. Fair winds."* — all rights reserved unless permission is granted by the author).
+   - Previously ported in Steps 1–2: Trim & luff helpers (`optimalBoomAngle`, `optimalSheet`, `luffFactor`), point-of-sail thresholds, and maneuver state machine (`SAILING` / `IN_IRONS` / `TACKING` / `GYBING` / `CRASH_GYBE`) in `src/sim/foilPhysics.ts`. No new code is copied from `tiller` in subsequent steps.

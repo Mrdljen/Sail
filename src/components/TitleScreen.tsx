@@ -17,9 +17,9 @@ export function TitleScreen({
   const spec = BOAT_SPECS[selectedBoat];
 
   return (
-    <div className="fixed inset-0 z-20 pointer-events-none flex flex-col justify-between p-8 md:p-12">
+    <div className="fixed inset-0 z-20 pointer-events-none flex flex-col justify-between p-6 md:p-10">
       {/* Subtle top-left scrim for contrast without blocking the live 3D yacht center-right */}
-      <div className="max-w-lg pointer-events-auto bg-slate-950/85 border border-slate-700/50 rounded-xl p-7 shadow-2xl">
+      <div className="max-w-lg max-h-[calc(100vh-7rem)] overflow-y-auto pointer-events-auto bg-slate-950/85 border border-slate-700/50 rounded-xl p-6 md:p-7 shadow-2xl">
         <div className="flex items-center gap-4 mb-4">
           <svg
             viewBox="0 0 48 48"
@@ -45,17 +45,19 @@ export function TitleScreen({
           </div>
         </div>
 
-        <p className="text-sm text-slate-300 leading-relaxed mb-5">
+        <p className="text-sm text-slate-300 leading-relaxed mb-4">
           Sail the 100 NM Canary Islands passage or chart the 28-hub Trade-Wind route around the
           Three Great Capes. Trim canvas through squalls, manage cabin power and fridge stores,
           swing on tidal anchors, and refit at dockside chandleries.
         </p>
 
-        {/* Starting Vessel Selector */}
+        {/* Starting Vessel Selector (5 Vessel Classes) */}
         <div className="mb-5">
-          <div className="text-xs font-medium text-slate-400 mb-2">Starting Vessel</div>
-          <div className="grid grid-cols-2 gap-2">
-            {(['elan-19', 'rustler-36'] as BoatId[]).map((id) => {
+          <div className="text-xs font-medium text-slate-400 mb-2">Starting Vessel Class (5 Hulls)</div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+            {(
+              ['elan-19', 'folkboat-25', 'contessa-32', 'rustler-36', 'hallberg-42'] as BoatId[]
+            ).map((id) => {
               const b = BOAT_SPECS[id];
               const active = selectedBoat === id;
               return (
@@ -63,14 +65,16 @@ export function TitleScreen({
                   key={id}
                   type="button"
                   onClick={() => onSelectBoat(id)}
-                  className={`text-left px-3.5 py-2.5 rounded-lg border transition-colors cursor-pointer ${
+                  className={`min-h-[48px] text-left px-3 py-2 rounded-lg border transition-colors cursor-pointer ${
                     active
                       ? 'bg-amber-500/15 border-amber-400 text-slate-50'
                       : 'bg-slate-900/70 border-slate-700/70 text-slate-300 hover:border-slate-500'
                   }`}
                 >
-                  <div className="text-sm font-semibold whitespace-nowrap">{b.name}</div>
-                  <div className="text-xs text-slate-400 truncate">{b.lengthFt} ft · {b.hullSpeedKts} kts max</div>
+                  <div className="text-xs font-semibold truncate">{b.name}</div>
+                  <div className="text-[11px] text-slate-400 truncate">
+                    {b.lengthFt}ft · {b.hullSpeedKts} kt{b.hasStaysail ? ' · Cutter' : ''}
+                  </div>
                 </button>
               );
             })}
@@ -83,14 +87,14 @@ export function TitleScreen({
             type="button"
             data-start="true"
             onClick={onStart}
-            className="px-6 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold text-sm transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            className="min-h-[44px] px-6 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold text-sm transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
             Start 100 NM Passage
           </button>
           <button
             type="button"
             onClick={onOpenWorldChart}
-            className="px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-600/80 font-medium text-sm transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            className="min-h-[44px] px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-600/80 font-medium text-sm transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
             Trade-Wind World Chart
           </button>
