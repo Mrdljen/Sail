@@ -9,9 +9,10 @@ import {
   tillerOptimalSheet,
 } from './foilPhysics';
 import { BOAT_SPECS } from './boats';
-import { evaluateHullResistance } from './hullPhysics';
+import { computeGzRightingMomentNm, evaluateHullResistance } from './hullPhysics';
 import { createInitialSimulationState, FIXED_PHYSICS_DT, stepSimulation } from './physics';
-import { computeRiggingFailureChance, evaluateWearFactors, getBoatReefGeometry } from './tuning';
+import { getRealismProfile } from './realism';
+import { computeRiggingFailureChance, evaluateWearFactors, getBoatReefGeometry, HYDRO_TUNING, SAIL_TUNING } from './tuning';
 
 /**
  * Golden reference tests generated directly by running:
@@ -267,4 +268,96 @@ test('Step 3: tides-of-fortune hullF/rigF wear applies Cl mult + extra Cd and ra
   assert.ok(riskWorn > riskHealthy * 10, 'Low rigF sharply raises parting probability in squall');
   assert.ok(riskCrash > riskWorn, 'Crash gybe further raises rigging failure chance');
 });
+
+test('Step 5: Full Sim has all overrides off, output equals pure port, and realism tiers never alter solver equations', () => {
+  const contessa = BOAT_SPECS['contessa-32'];
+  const fullProf = getRealismProfile(1.0, contessa.noGoAngleDeg);
+
+  // 1. All assists/caps/overrides are disabled at Full Sim
+  assert.equal(fullProf.preset, 'simulation');
+  assert.equal(fullProf.autoTrimAssist, false);
+  assert.equal(fullProf.inIronsGhostDrive, false);
+  assert.equal(fullProf.accidentalGybeDamage, true);
+  assert.equal(fullProf.waveSlamAndSurf, true);
+  assert.equal(fullProf.wearRateScale, 1.0);
+  assert.equal(fullProf.leewayScale, 1.0);
+  assert.equal(fullProf.noGoDeg, contessa.noGoAngleDeg);
+  assert.ok(fullProf.forgivingHeelCapDeg >= contessa.gzCurve.maxGzAngleDeg, 'Full Sim heel cap does not clip GZ curve');
+
+  // 2. Output at Full Sim equals direct evaluation of the pure bythelee/tiller/Delft/GZ port
+  const base = createInitialSimulationState('contessa-32');
+  const fullState = {
+    ...base,
+    simRealism: 1.0,
+    boomSide: -1 as const,
+    mainsheetPct: 60,
+    jibsheetPct: 60,
+    jibDeployed: true,
+    staysailDeployed: false,
+    reefLevel: 0 as const,
+    wear: { ...base.wear, hull: 100, mainsail: 100, rigging: 100 },
+    weather: { ...base.weather, waveHeightM: 0.4 },
+    heelDeg: 0,
+    surgeVelMs: 0,
+  };
+  const awaDeg = 75;
+  const awsKts = 16;
+  const out = solveFoilAndManeuver(fullState, awaDeg, awsKts, 0);
+
+  // Compute direct pure port from primitives without tier wrapper
+  const degToRad = (d: number) => (d * Math.PI) / 180;
+  const awsMs = awsKts / 1.94384;
+  const awaRad = degToRad(awaDeg);
+  const qxV = Math.cos(awaRad) * awsMs;
+  const qyV = -Math.sin(awaRad) * awsMs;
+  const evalPureSail = (area: number, ar: number, chord: number, bDeg: number) => {
+    const bRad = degToRad(bDeg);
+    const cosB = Math.cos(bRad);
+    const sinB = Math.sin(bRad);
+    const res = byTheLeeCalcLocalForce(area, ar, chord, qxV * cosB + qyV * sinB, -qxV * sinB + qyV * cosB);
+    return {
+      fDriveN: -(res.fx * cosB - res.fy * sinB),
+      fLatSignedN: res.fx * sinB + res.fy * cosB,
+    };
+  };
+  const mainAngle = -(5 + (85 - 5) * (1 - 0.6)); // tiller BOOM_MIN/MAX
+  const jibAngle = -(SAIL_TUNING.jib.sheetAngleMaxDeg + (SAIL_TUNING.jib.sheetAngleMinDeg - SAIL_TUNING.jib.sheetAngleMaxDeg) * 0.6);
+  const pMain = evalPureSail(contessa.defaultCfg.sailAreaM2, 3, contessa.defaultCfg.boatLengthM * SAIL_TUNING.main.chordLengthFrac, mainAngle);
+  const pJib = evalPureSail(contessa.defaultCfg.jibAreaM2, SAIL_TUNING.jib.aspectRatio, contessa.defaultCfg.boatLengthM * SAIL_TUNING.jib.chordLengthFrac, jibAngle);
+  const pureDriveN = pMain.fDriveN + pJib.fDriveN;
+  const pureLatN = pMain.fLatSignedN + pJib.fLatSignedN;
+  const pureTorqueNm =
+    (-pMain.fLatSignedN * contessa.reefPoints[0].mainCeHeightM - pJib.fLatSignedN * contessa.reefPoints[0].jibCeHeightM) *
+    HYDRO_TUNING.heelingMomentArmScale;
+
+  assert.ok(Math.abs(out.fDriveN - pureDriveN) < 1e-6, 'Full Sim fDriveN equals pure foil port');
+  assert.ok(Math.abs(out.fLatSignedN - pureLatN) < 1e-6, 'Full Sim fLatSignedN equals pure foil port');
+  assert.ok(Math.abs(out.heelingTorqueNm - pureTorqueNm) < 1e-6, 'Full Sim heelingTorqueNm equals pure GZ port');
+
+  const rmAtHeel = computeGzRightingMomentNm(contessa.displacementKg, Math.abs(out.targetHeelDeg), contessa.gzCurve, 1.0);
+  const effHmAtHeel = Math.abs(pureTorqueNm) * Math.pow(Math.cos(degToRad(out.targetHeelDeg)), HYDRO_TUNING.heelAerodynamicCosExp);
+  assert.ok(Math.abs(rmAtHeel - effHmAtHeel) < 25, 'Full Sim heel balances GZ righting moment equation');
+
+  const hullResAtTarget = evaluateHullResistance('contessa-32', contessa.delftHull, out.targetSpeedKts / 1.94384, 0, contessa.keelType, 1, 1, 1, false);
+  assert.ok(Math.abs(hullResAtTarget.totalDragN - pureDriveN) < 25, 'Full Sim target speed balances Delft+ITTC-57 resistance');
+
+  // 3. Arcade, Cruising, and Full Sim execute IDENTICAL solver equations when inputs are trimmed & within heel cap / calm water
+  const optSheet = Math.round(tillerOptimalSheet(90) * 100);
+  const commonReach = {
+    ...fullState,
+    mainsheetPct: optSheet,
+    jibsheetPct: optSheet,
+    weather: { ...base.weather, waveHeightM: 0.4 },
+  };
+  const resArcade = solveFoilAndManeuver({ ...commonReach, simRealism: 0.1 }, 90, 15, 0);
+  const resCruise = solveFoilAndManeuver({ ...commonReach, simRealism: 0.55 }, 90, 15, 0);
+  const resSim = solveFoilAndManeuver({ ...commonReach, simRealism: 1.0 }, 90, 15, 0);
+
+  assert.ok(Math.abs(resArcade.fDriveN - resSim.fDriveN) < 1e-6, 'Arcade and Full Sim use identical sail drive equations');
+  assert.ok(Math.abs(resCruise.fDriveN - resSim.fDriveN) < 1e-6, 'Cruising and Full Sim use identical sail drive equations');
+  assert.ok(Math.abs(resArcade.heelingTorqueNm - resSim.heelingTorqueNm) < 1e-6, 'Realism tiers do not multiply heeling torque');
+  assert.ok(Math.abs(resArcade.targetHeelDeg - resSim.targetHeelDeg) < 1e-6, 'Below Arcade cap (26°), heel matches Full Sim exactly');
+  assert.ok(Math.abs(resArcade.targetSpeedKts - resSim.targetSpeedKts) < 1e-6, 'Calm-water beam reach speed matches across all 3 tiers');
+});
+
 
