@@ -149,3 +149,7 @@ The rows below record behavior, control, audio, and geometry tuning guesses from
 | Winch drum top/base radius and height | 0.075 m / 0.095 m / 0.14 m | Procedural self-tailing winch proportions | Compare with common 20–40 ft yacht winches and inspect cockpit reach at each hull scale. |
 | Winch crank length / knob radius | 0.20 m / 0.028 m | Procedural handle and grip size | Check hand-scale plausibility and clearance from coaming and adjacent winch. |
 | Winch placement | ±0.34 beam, 0.54 m local y, 0.15 m forward of cockpit center | Port/starboard winch placement | Inspect each cockpit and verify the mainsheet/jibsheet controls match their rig lines. |
+
+### Step 4 (Hull): No New Hull-Resistance Guess
+
+The last presentation pass did not change Delft residuary resistance, ITTC-57 friction, wetted area, or hull-fouling equations. Existing Step 4 (Hull) rows above remain the validation record; surface sampling and wake shading below are visual coupling/effects, not hull resistance.
