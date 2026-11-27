@@ -168,3 +168,7 @@ The last presentation pass did not change Delft residuary resistance, ITTC-57 fr
 | Winch ratchet debounce | 0.11 s | Minimum spacing between ratchet cues | Trim rapidly from touch and 3D winch; one action should sound once without chatter. |
 | Winch ratchet notes / spacing | 3 × (620 + 95*i) Hz, 35 ms spacing | Three synthetic pawl clicks per cue | Compare with a short manual winch recording at low playback level; keep clicks distinct from switch sounds. |
 | Winch ratchet gain / tone duration | 0.08 / 25 ms | Click level and decay | Test on tablet speakers and headphones; confirm clicks are audible without harshness. |
+
+### Step 3: Reefing & Interior Mapping
+
+The new HUD and cabin repeater read reefLevel from shared simulation state. The last pass did not change reef-point geometry, sail area, center of effort, or sail-wear equations; use the Step 3 rows above. Verify cabin and tablet reef controls show the same reef level.
