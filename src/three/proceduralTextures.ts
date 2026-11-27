@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 import type { SimulationState } from '../types/sailing';
+import { BOAT_SPECS } from '../sim/boats';
+import { toMarineInstrumentData } from '../sim/instrumentData';
 
 export interface ProceduralTextureSet {
   teakColor: THREE.CanvasTexture;
@@ -16,6 +18,7 @@ export interface ProceduralTextureSet {
   chartPlotterTex: THREE.CanvasTexture;
   barometerTex: THREE.CanvasTexture;
   ammeterTex: THREE.CanvasTexture;
+  helmInstrumentTex: THREE.CanvasTexture;
   vhfLiveTex: THREE.CanvasTexture;
   updateCabinInstruments: (state: SimulationState) => void;
   dispose: () => void;
@@ -506,11 +509,99 @@ export function createProceduralTextures(maxAnisotropy: number): ProceduralTextu
   vhfLiveTex.colorSpace = THREE.SRGBColorSpace;
   vhfLiveTex.anisotropy = maxAnisotropy;
 
+  const helmCanvas = document.createElement('canvas');
+  helmCanvas.width = 384;
+  helmCanvas.height = 256;
+  const helmCtx = helmCanvas.getContext('2d')!;
+  const helmInstrumentTex = new THREE.CanvasTexture(helmCanvas);
+  helmInstrumentTex.colorSpace = THREE.SRGBColorSpace;
+  helmInstrumentTex.anisotropy = maxAnisotropy;
+
   const updateCabinInstruments = (state: SimulationState) => {
+    const instruments = toMarineInstrumentData(state, BOAT_SPECS[state.boatId].noGoAngleDeg);
+    const pressureHpa = instruments.environment.outside.pressure.value / 100;
+    // Cockpit repeater: familiar wind, log, depth and heading fields on one waterproof display.
+    helmCtx.fillStyle = '#06121d';
+    helmCtx.fillRect(0, 0, 384, 256);
+    helmCtx.fillStyle = '#10283a';
+    helmCtx.fillRect(0, 0, 384, 31);
+    helmCtx.fillStyle = instruments.sailing.instrumentsPowered ? '#e2e8f0' : '#64748b';
+    helmCtx.font = 'bold 15px monospace';
+    helmCtx.fillText(instruments.sailing.instrumentsPowered ? 'SAIL / NAV' : 'INSTRUMENTS OFF', 14, 21);
+    helmCtx.textAlign = 'right';
+    helmCtx.fillStyle = '#34d399';
+    helmCtx.fillText(instruments.sailing.autopilotMode.toUpperCase(), 370, 21);
+    helmCtx.textAlign = 'left';
+    if (instruments.sailing.instrumentsPowered) {
+      const wx = 83;
+      const wy = 133;
+      const wr = 66;
+      helmCtx.fillStyle = '#0c1d2b';
+      helmCtx.beginPath();
+      helmCtx.arc(wx, wy, wr, 0, Math.PI * 2);
+      helmCtx.fill();
+      helmCtx.strokeStyle = '#657c8a';
+      helmCtx.lineWidth = 2;
+      helmCtx.stroke();
+      helmCtx.fillStyle = 'rgba(248,113,113,.2)';
+      helmCtx.beginPath();
+      helmCtx.moveTo(wx, wy);
+      helmCtx.arc(wx, wy, wr - 8, -Math.PI / 2 - (instruments.sailing.noGoAngleDeg * Math.PI) / 180,
+        -Math.PI / 2 + (instruments.sailing.noGoAngleDeg * Math.PI) / 180);
+      helmCtx.closePath();
+      helmCtx.fill();
+      for (let d = 0; d < 360; d += 30) {
+        const a = (d * Math.PI) / 180 - Math.PI / 2;
+        const inner = wr - (d % 90 === 0 ? 18 : 10);
+        helmCtx.strokeStyle = '#cbd5e1';
+        helmCtx.beginPath();
+        helmCtx.moveTo(wx + Math.cos(a) * inner, wy + Math.sin(a) * inner);
+        helmCtx.lineTo(wx + Math.cos(a) * (wr - 4), wy + Math.sin(a) * (wr - 4));
+        helmCtx.stroke();
+      }
+      const awa = instruments.sailing.apparentWindAngleDeg * Math.PI / 180 - Math.PI / 2;
+      helmCtx.strokeStyle = '#fbbf24';
+      helmCtx.lineWidth = 4;
+      helmCtx.beginPath();
+      helmCtx.moveTo(wx, wy);
+      helmCtx.lineTo(wx + Math.cos(awa) * (wr - 20), wy + Math.sin(awa) * (wr - 20));
+      helmCtx.stroke();
+      helmCtx.fillStyle = '#f8fafc';
+      helmCtx.beginPath();
+      helmCtx.moveTo(wx, wy - 9);
+      helmCtx.lineTo(wx - 6, wy + 6);
+      helmCtx.lineTo(wx + 6, wy + 6);
+      helmCtx.closePath();
+      helmCtx.fill();
+
+      const readout = (label: string, value: string, x: number, y: number, color = '#f8fafc') => {
+        helmCtx.fillStyle = '#91a5b2';
+        helmCtx.font = '11px monospace';
+        helmCtx.fillText(label, x, y);
+        helmCtx.fillStyle = color;
+        helmCtx.font = 'bold 20px monospace';
+        helmCtx.fillText(value, x, y + 24);
+      };
+      readout('APP WIND', `${Math.round(instruments.sailing.apparentWindAngleDeg)}°`, 174, 60, '#fbbf24');
+      readout('BOAT SPEED', `${instruments.navigation.speedThroughWater.value.toFixed(1)} kt`, 174, 103, '#7dd3fc');
+      readout('DEPTH', `${instruments.route.depthM.toFixed(1)} m`, 174, 146, instruments.route.depthM < 6 ? '#fb7185' : '#f8fafc');
+      readout('HEADING', `${String(Math.round(instruments.sailing.headingDeg) % 360).padStart(3, '0')}°`, 174, 189, '#34d399');
+      helmCtx.fillStyle = '#9fb2bf';
+      helmCtx.font = '11px monospace';
+      helmCtx.fillText(`TWS ${instruments.sailing.trueWindSpeedKts.toFixed(1)} kt`, 16, 239);
+    } else {
+      helmCtx.fillStyle = '#64748b';
+      helmCtx.font = 'bold 16px monospace';
+      helmCtx.textAlign = 'center';
+      helmCtx.fillText('SWITCH ON INSTRUMENTS', 192, 139);
+      helmCtx.textAlign = 'left';
+    }
+    helmInstrumentTex.needsUpdate = true;
+
     // A. Chart Plotter Display
     plCtx.fillStyle = '#071522';
     plCtx.fillRect(0, 0, 320, 224);
-    if (!state.electrical.instruments) {
+    if (!instruments.sailing.instrumentsPowered) {
       plCtx.strokeStyle = '#334155';
       plCtx.lineWidth = 4;
       plCtx.strokeRect(4, 4, 312, 216);
@@ -558,10 +649,10 @@ export function createProceduralTextures(maxAnisotropy: number): ProceduralTextu
       plCtx.fill();
 
       // Vessel marker on track
-      const fracX = Math.min(1, Math.max(0, state.passage.xNm / Math.max(1, state.passage.totalDistanceNm)));
+      const fracX = instruments.route.progress;
       const vx = 28 + fracX * 264;
-      const vy = Math.min(180, Math.max(36, 108 + state.passage.zNm * 7));
-      const hRad = ((state.headingDeg - 90) * Math.PI) / 180;
+      const vy = Math.min(180, Math.max(36, 108 + instruments.route.crossTrackNm * 7));
+      const hRad = ((instruments.sailing.headingDeg - 90) * Math.PI) / 180;
       plCtx.save();
       plCtx.translate(vx, vy);
       plCtx.rotate(hRad);
@@ -578,7 +669,7 @@ export function createProceduralTextures(maxAnisotropy: number): ProceduralTextu
       plCtx.fillStyle = '#0f2538';
       plCtx.fillRect(0, 0, 320, 26);
       plCtx.fillRect(0, 190, 320, 34);
-      plCtx.fillStyle = state.weather.phase === 'squall' ? '#f87171' : '#38bdf8';
+      plCtx.fillStyle = instruments.systems.weatherPhase === 'squall' ? '#f87171' : '#38bdf8';
       plCtx.font = 'bold 12px monospace';
       plCtx.fillText(
         state.weather.phase === 'squall'
@@ -589,9 +680,9 @@ export function createProceduralTextures(maxAnisotropy: number): ProceduralTextu
       );
       plCtx.fillStyle = '#e2e8f0';
       plCtx.font = 'bold 12px monospace';
-      const dtw = Math.max(0, Math.round(state.passage.totalDistanceNm - state.passage.xNm));
+      const dtw = Math.max(0, Math.round(instruments.route.distanceRemainingNm));
       plCtx.fillText(
-        `HDG ${String(Math.round(state.headingDeg)).padStart(3, '0')}  SOG ${state.sogKts.toFixed(1)}kt  DTW ${dtw}NM`,
+        `HDG ${String(Math.round(instruments.sailing.headingDeg)).padStart(3, '0')}  SOG ${instruments.navigation.speedOverGround.value.toFixed(1)}kt  DTW ${dtw}NM`,
         10,
         207,
       );
@@ -630,14 +721,14 @@ export function createProceduralTextures(maxAnisotropy: number): ProceduralTextu
     bCtx.fillText('STORM', 52, 134);
     bCtx.fillText('FAIR', 140, 134);
     bCtx.font = 'bold 15px monospace';
-    bCtx.fillText(`${Math.round(state.weather.barometerHpa)}`, 96, 148);
+    bCtx.fillText(`${Math.round(pressureHpa)}`, 96, 148);
     bCtx.font = '10px sans-serif';
-    bCtx.fillStyle = state.weather.barometerHpa < 1005 ? '#dc2626' : '#475569';
-    bCtx.fillText(state.weather.barometerTrend.toUpperCase(), 96, 162);
+    bCtx.fillStyle = pressureHpa < 1005 ? '#dc2626' : '#475569';
+    bCtx.fillText(instruments.systems.barometerTrend.toUpperCase(), 96, 162);
     bCtx.textAlign = 'left';
 
     // Needle
-    const bNorm = Math.min(1, Math.max(0, (state.weather.barometerHpa - 980) / 60));
+    const bNorm = Math.min(1, Math.max(0, (pressureHpa - 980) / 60));
     const nAng = (-135 + bNorm * 270 - 90) * (Math.PI / 180);
     bCtx.strokeStyle = '#0f172a';
     bCtx.lineWidth = 4;
@@ -657,7 +748,7 @@ export function createProceduralTextures(maxAnisotropy: number): ProceduralTextu
     aCtx.strokeStyle = '#475569';
     aCtx.lineWidth = 4;
     aCtx.strokeRect(2, 2, 252, 156);
-    const soc = Math.min(1, Math.max(0, state.electrical.batteryAh / Math.max(1, state.electrical.batteryCapacityAh)));
+    const soc = Math.min(1, Math.max(0, instruments.electrical.batteries.house.capacity.stateOfCharge.value));
     aCtx.fillStyle = '#94a3b8';
     aCtx.font = 'bold 12px monospace';
     aCtx.fillText('12V HOUSE BANK & SOLAR', 14, 24);
@@ -732,6 +823,7 @@ export function createProceduralTextures(maxAnisotropy: number): ProceduralTextu
     chartPlotterTex,
     barometerTex,
     ammeterTex,
+    helmInstrumentTex,
     vhfLiveTex,
     updateCabinInstruments,
     dispose: () => {
@@ -749,6 +841,7 @@ export function createProceduralTextures(maxAnisotropy: number): ProceduralTextu
       chartPlotterTex.dispose();
       barometerTex.dispose();
       ammeterTex.dispose();
+      helmInstrumentTex.dispose();
       vhfLiveTex.dispose();
     },
   };

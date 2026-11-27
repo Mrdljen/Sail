@@ -112,3 +112,23 @@ Every constant in Meridian Passage that does **not** come verbatim from a cited 
 - `HYDRO_TUNING.heelScaleByPreset` (`{ arcade: 0.58, cruising: 0.96, simulation: 1.12 }`) has been **removed**. All three realism tiers now execute the exact same aerodynamic, Delft/ITTC-57 hydrodynamic, and GZ righting-moment equations; `src/sim/realism.ts` differs strictly through input and limit parameters (`noGoDeg`, `autoTrimAssist`, `inIronsGhostDrive`, `accidentalGybeDamage`, `waveSlamAndSurf`, `forgivingHeelCapDeg`, `wearRateScale`, `leewayScale`).
 
 
+
+
+---
+
+## Last Sailing Presentation Change (HUD, Cabin Repeater, Surface Following & Speed Wake)
+
+The rows below record behavior, control, audio, and geometry tuning guesses from the last UI/3D pass. They do not change the physics models tracked above. The CPU Gerstner sampler is an algorithm port of this project's own ocean vertex shader: src/three/oceanScene.ts, evalWave, mirrored by evaluateGerstnerSurface and its inverse-displacement sampling. No Tiller source was copied for this pass.
+
+### Step 1: Instrument Data & Canvas HUD (src/sim/instrumentData.ts, src/components/SailingInstrumentPanel.tsx)
+
+| Constant | Value | Meaning | How to Validate |
+|---|---:|---|---|
+| HUD smoothing rate | 6.5 s^-1 | Exponential damping rate for animated readings | Replay abrupt heading, wind, heel, and speed changes; confirm readings stay legible with less than 0.5 s lag. |
+| HUD frame delta cap | 0.1 s | Avoids a suspended tab jumping readouts on resume | Suspend/resume and confirm the readouts approach current values smoothly. |
+| Sparkline sample interval | 550 ms | Time between speed/depth history points | Compare trace horizon and redraw load on a tablet at 30 and 60 fps. |
+| Sparkline history length | 42 samples | Retained points (about 23.1 s at the configured interval) | Confirm the full trace is readable at narrow HUD width and does not grow during a 10-minute session. |
+| Solar dial full scale | 600 W | Maps panel output to a 0–100% arc | Compare against panel peak rating; verify ordinary output uses most of the arc without clipping. |
+| Low-battery display threshold | 20% | Changes charge readout to warning color | Play through discharge/recharge and verify the color transition matches the intended low-charge cue. |
+| Wind-warning color scale | 35 kt | Normalizes footer wind color | Compare calm and gale scenarios; keep this distinct from the simulation storm-warning threshold. |
+| Artificial-horizon pitch gain / limit | 2.1 px/degree, ±40 px | Pitch movement and limit in the attitude window | Compare 0°, ±10°, ±20° against a reference horizon and confirm the scale reads well at panel size. |

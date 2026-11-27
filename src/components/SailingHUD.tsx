@@ -25,6 +25,8 @@ import type {
 import { BOAT_SPECS } from '../sim/boats';
 import { buildNmeaSentences } from '../sim/nmea';
 import { getOptimalSheetPct, getRealismProfile } from '../sim/physics';
+import { toMarineInstrumentData } from '../sim/instrumentData';
+import { SailingInstrumentPanel } from './SailingInstrumentPanel';
 
 export type DockTab = 'helm' | 'weather' | 'cabin' | 'anchor';
 
@@ -93,6 +95,7 @@ export function SailingHUD({
 }: SailingHUDProps) {
   const [activeTab, setActiveTab] = useState<DockTab>('helm');
   const spec = BOAT_SPECS[sim.boatId];
+  const instrumentData = toMarineInstrumentData(sim, spec.noGoAngleDeg);
   const distRemaining = Math.max(0, Math.round(sim.passage.totalDistanceNm - sim.passage.xNm));
   const optimalTrim = getOptimalSheetPct(Math.abs(sim.apparentWindAngleDeg));
   const batteryPct = Math.round((sim.electrical.batteryAh / Math.max(1, sim.electrical.batteryCapacityAh)) * 100);
@@ -244,6 +247,16 @@ export function SailingHUD({
             <Pause className="w-4 h-4" />
           </button>
         </div>
+      </div>
+
+      <div className="pointer-events-none fixed right-3 top-[74px] z-20 flex justify-end md:right-4">
+        <SailingInstrumentPanel
+          data={instrumentData}
+          onSteerStep={onSteerStep}
+          onSetMainsheet={onSetMainsheet}
+          onSetJibsheet={onSetJibsheet}
+          onSetAutopilot={onSetAutopilot}
+        />
       </div>
 
       {/* 3D Hover Tooltip */}
