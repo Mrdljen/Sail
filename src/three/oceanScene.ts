@@ -45,6 +45,64 @@ const GERSTNER_WAVES: readonly GerstnerWave[] = [
   { dirX: 0.32, dirZ: 0.95, lambda: 5.8, amp: 0.022, q: 0.20, speed: 4.10 },
 ];
 
+interface GerstnerSample {
+  height: number;
+  horizontalX: number;
+  horizontalZ: number;
+  slopeX: number;
+  slopeZ: number;
+}
+
+function evaluateGerstnerSurface(
+  elapsedSec: number,
+  x: number,
+  z: number,
+  waveScale: number,
+): GerstnerSample {
+  // Local CPU port of this file's vertex-shader evalWave; the shared equation
+  // keeps hull and wake samples on the rendered ocean surface.
+  let height = 0;
+  let horizontalX = 0;
+  let horizontalZ = 0;
+  let slopeX = 0;
+  let slopeZ = 0;
+  for (const wave of GERSTNER_WAVES) {
+    const k = (Math.PI * 2) / wave.lambda;
+    const amp = wave.amp * waveScale;
+    const phase = (wave.dirX * x + wave.dirZ * z) * k - elapsedSec * wave.speed;
+    const sine = Math.sin(phase);
+    const cosine = Math.cos(phase);
+    const horizontal = wave.q * amp * cosine;
+    horizontalX += wave.dirX * horizontal;
+    horizontalZ += wave.dirZ * horizontal;
+    height += amp * sine;
+    slopeX += amp * k * cosine * wave.dirX;
+    slopeZ += amp * k * cosine * wave.dirZ;
+  }
+  return { height, horizontalX, horizontalZ, slopeX, slopeZ };
+}
+
+function createFarOceanGeometry(size: number, segments: number, openingHalfExtent: number): THREE.BufferGeometry {
+  const geometry = new THREE.PlaneGeometry(size, size, segments, segments);
+  geometry.rotateX(-Math.PI / 2);
+  const positions = geometry.getAttribute('position');
+  const indices = geometry.getIndex();
+  if (!indices) return geometry;
+  const filtered: number[] = [];
+  const insideOpening = (vertex: number) =>
+    Math.abs(positions.getX(vertex)) < openingHalfExtent &&
+    Math.abs(positions.getZ(vertex)) < openingHalfExtent;
+  for (let i = 0; i < indices.count; i += 3) {
+    const a = indices.getX(i);
+    const b = indices.getX(i + 1);
+    const c = indices.getX(i + 2);
+    if (insideOpening(a) || insideOpening(b) || insideOpening(c)) continue;
+    filtered.push(a, b, c);
+  }
+  geometry.setIndex(filtered);
+  return geometry;
+}
+
 function sampleGerstnerMotion(
   elapsedSec: number,
   offsetX: number,
@@ -53,23 +111,18 @@ function sampleGerstnerMotion(
   headingDeg: number,
 ): { heaveM: number; pitchRad: number; rollRad: number } {
   const waveScale = THREE.MathUtils.clamp(waveHeightM, 0.25, 3.8) * 0.58;
-  let h = 0;
-  let dHx = 0;
-  let dHz = 0;
-
-  for (let i = 0; i < GERSTNER_WAVES.length; i++) {
-    const w = GERSTNER_WAVES[i];
-    const k = (Math.PI * 2) / w.lambda;
-    const amp = w.amp * waveScale;
-    const ph = (w.dirX * offsetX + w.dirZ * offsetZ) * k - elapsedSec * w.speed;
-    h += amp * Math.sin(ph);
-    // Low-pass large swell slopes (>14m wavelength) so small boat deck feels natural inertia
-    if (w.lambda >= 14) {
-      const slopeWeight = w.lambda >= 40 ? 1.0 : 0.45;
-      const c = Math.cos(ph) * amp * k * slopeWeight;
-      dHx += c * w.dirX;
-      dHz += c * w.dirZ;
-    }
+  // Match the displaced ocean mesh at the boat's actual world-space waterline.
+  // Gerstner waves also move water sideways, so invert that displacement before
+  // reading its height and local surface slope.
+  const targetX = offsetX;
+  const targetZ = offsetZ;
+  let sampleX = targetX;
+  let sampleZ = targetZ;
+  let surface = evaluateGerstnerSurface(elapsedSec, sampleX, sampleZ, waveScale);
+  for (let i = 0; i < 3; i++) {
+    sampleX = targetX - surface.horizontalX;
+    sampleZ = targetZ - surface.horizontalZ;
+    surface = evaluateGerstnerSurface(elapsedSec, sampleX, sampleZ, waveScale);
   }
 
   // Boat forward axis in world XZ: (sin(hdg), -cos(hdg)); starboard right: (cos(hdg), sin(hdg))
@@ -79,14 +132,37 @@ function sampleGerstnerMotion(
   const rightX = Math.cos(hRad);
   const rightZ = Math.sin(hRad);
 
-  const pitchSlope = dHx * fwdX + dHz * fwdZ;
-  const rollSlope = dHx * rightX + dHz * rightZ;
+  const pitchSlope = surface.slopeX * fwdX + surface.slopeZ * fwdZ;
+  const rollSlope = surface.slopeX * rightX + surface.slopeZ * rightZ;
 
   return {
-    heaveM: h,
+    heaveM: surface.height,
     pitchRad: THREE.MathUtils.clamp(Math.atan(pitchSlope) * 0.78, -0.24, 0.24),
     rollRad: THREE.MathUtils.clamp(-Math.atan(rollSlope) * 0.68, -0.22, 0.22),
   };
+}
+
+function sampleGerstnerHeightAt(
+  elapsedSec: number,
+  worldX: number,
+  worldZ: number,
+  offsetX: number,
+  offsetZ: number,
+  waveHeightM: number,
+): number {
+  const farFade = 1 - THREE.MathUtils.smoothstep(Math.hypot(worldX, worldZ), 220, 620);
+  const waveScale = THREE.MathUtils.clamp(waveHeightM, 0.25, 3.8) * 0.58 * farFade;
+  const targetX = worldX + offsetX;
+  const targetZ = worldZ + offsetZ;
+  let sampleX = targetX;
+  let sampleZ = targetZ;
+  let surface = evaluateGerstnerSurface(elapsedSec, sampleX, sampleZ, waveScale);
+  for (let i = 0; i < 3; i++) {
+    sampleX = targetX - surface.horizontalX;
+    sampleZ = targetZ - surface.horizontalZ;
+    surface = evaluateGerstnerSurface(elapsedSec, sampleX, sampleZ, waveScale);
+  }
+  return surface.height;
 }
 
 export interface OceanSceneCallbacks {
@@ -324,6 +400,7 @@ export class SailingSceneController {
   private oceanUniforms = {
     uTime: { value: 0 },
     uWaveHeight: { value: 1.1 },
+    uBoatSpeed: { value: 0 },
     uOffset: { value: new THREE.Vector2(0, 0) },
     uShoalMix: { value: 0.4 },
     uSquallMix: { value: 0.2 },
@@ -453,8 +530,16 @@ export class SailingSceneController {
 
     // Upgraded Coupled 6-Wave Gerstner Ocean with Jacobian Whitecaps, Fresnel/SSS & Hull Cavity Exclusion
     const oceanSegs = this.isSoftwareGl ? 76 : 120;
-    const oceanGeo = new THREE.PlaneGeometry(1400, 1400, oceanSegs, oceanSegs);
-    oceanGeo.rotateX(-Math.PI / 2);
+    const oceanCellSize = 1400 / oceanSegs;
+    const nearOceanHalfSize = Math.ceil(130 / oceanCellSize) * oceanCellSize;
+    const oceanGeo = createFarOceanGeometry(1400, oceanSegs, 130);
+    const nearOceanGeo = new THREE.PlaneGeometry(
+      nearOceanHalfSize * 2,
+      nearOceanHalfSize * 2,
+      this.isSoftwareGl ? 160 : 224,
+      this.isSoftwareGl ? 160 : 224,
+    );
+    nearOceanGeo.rotateX(-Math.PI / 2);
     const oceanMat = new THREE.MeshStandardMaterial({
       color: 0xffffff,
       roughness: 0.22,
@@ -473,6 +558,7 @@ export class SailingSceneController {
     oceanMat.onBeforeCompile = (shader) => {
       shader.uniforms.uTime = uniforms.uTime;
       shader.uniforms.uWaveHeight = uniforms.uWaveHeight;
+      shader.uniforms.uBoatSpeed = uniforms.uBoatSpeed;
       shader.uniforms.uOffset = uniforms.uOffset;
       shader.uniforms.uShoalMix = uniforms.uShoalMix;
       shader.uniforms.uSquallMix = uniforms.uSquallMix;
@@ -488,6 +574,7 @@ export class SailingSceneController {
         `
         uniform float uTime;
         uniform float uWaveHeight;
+        uniform float uBoatSpeed;
         uniform vec2 uOffset;
         varying float vWaveCrest;
         varying float vJac;
@@ -544,6 +631,7 @@ export class SailingSceneController {
         `
         uniform float uTime;
         uniform float uWaveHeight;
+        uniform float uBoatSpeed;
         uniform float uShoalMix;
         uniform float uSquallMix;
         uniform vec3 uSunDir;
@@ -653,7 +741,18 @@ export class SailingSceneController {
         }
 
         vec3 foamCol = mix(vec3(0.89, 0.95, 0.98), vec3(0.72, 0.79, 0.85), uSquallMix * 0.55);
-        float totalFoam = clamp(lacyFoam * 1.15 + fairFlecks + hullCollar * 0.68, 0.0, 0.92);
+        // Forward V-wave and narrow quarter wake brighten as the hull gathers way.
+        float speedWake = smoothstep(0.35, 5.0, uBoatSpeed);
+        float bowDist = max(0.0, -bPos.z - uBoatHull.x * 0.48);
+        float bowWidth = hullHw + bowDist * 0.34;
+        float bowLine = 1.0 - smoothstep(0.12, 0.58, abs(abs(bPos.x) - bowWidth));
+        float bowWake = bowLine * exp(-bowDist / max(1.0, uBoatHull.x * 0.55)) * step(0.01, bowDist);
+        float sternDist = max(0.0, bPos.z - uBoatHull.x * 0.48);
+        float sternWidth = uBoatHull.y * 0.5 + sternDist * 0.12;
+        float sternLine = 1.0 - smoothstep(0.10, 0.48, abs(abs(bPos.x) - sternWidth));
+        float sternWake = sternLine * exp(-sternDist / 15.0) * step(0.01, sternDist);
+        float boatWash = speedWake * (bowWake * 0.42 + sternWake * 0.22) * (0.55 + fN.g * 0.45);
+        float totalFoam = clamp(lacyFoam * 1.15 + fairFlecks + hullCollar * 0.68 + boatWash, 0.0, 0.92);
         diffuseColor.rgb = mix(waterCol, foamCol, totalFoam);
         `,
       );
@@ -666,10 +765,12 @@ export class SailingSceneController {
         `,
       );
     };
-    this.disposables.push(oceanGeo, oceanMat);
+    this.disposables.push(oceanGeo, nearOceanGeo, oceanMat);
     const oceanMesh = new THREE.Mesh(oceanGeo, oceanMat);
     oceanMesh.receiveShadow = !this.isSoftwareGl;
-    scene.add(oceanMesh);
+    const nearOceanMesh = new THREE.Mesh(nearOceanGeo, oceanMat);
+    nearOceanMesh.receiveShadow = !this.isSoftwareGl;
+    scene.add(oceanMesh, nearOceanMesh);
 
     // Islands & Distant Harbor Vessels
     this.departureIsland = createIslandGroup(1.2, this.isSoftwareGl, true);
@@ -933,6 +1034,7 @@ export class SailingSceneController {
     const shoalMix = THREE.MathUtils.clamp(1 - (state.passage.depthM - 4) / 36, 0, 1);
     this.oceanUniforms.uTime.value = this.elapsedSec;
     this.oceanUniforms.uWaveHeight.value = state.weather.waveHeightM;
+    this.oceanUniforms.uBoatSpeed.value = state.boatSpeedKts;
     this.oceanUniforms.uOffset.value.set(state.passage.xNm * 60, state.passage.zNm * 60);
     this.oceanUniforms.uShoalMix.value = shoalMix;
     this.oceanUniforms.uSquallMix.value = squallMix;
@@ -980,6 +1082,8 @@ export class SailingSceneController {
   private updateParticles(state: SimulationState, dt: number): void {
     const hRad = (state.headingDeg * Math.PI) / 180;
     const sternDist = this.boat.deckLengthM * 0.49;
+    const waveOffsetX = state.passage.xNm * 60;
+    const waveOffsetZ = state.passage.zNm * 60;
 
     // 1. Stern Kelvin Wake Foam
     if (state.boatSpeedKts > 0.6 && Math.random() < 0.78) {
@@ -998,7 +1102,15 @@ export class SailingSceneController {
         this.wakePos[i * 3] -= Math.sin(hRad) * driftSpeed * dt;
         this.wakePos[i * 3 + 2] += Math.cos(hRad) * driftSpeed * dt;
         const s = (1.6 - this.wakeLife[i] * 0.8) * 1.45;
-        _mat4.makeTranslation(this.wakePos[i * 3], 0.08, this.wakePos[i * 3 + 2]);
+        const wakeY = sampleGerstnerHeightAt(
+          this.elapsedSec,
+          this.wakePos[i * 3],
+          this.wakePos[i * 3 + 2],
+          waveOffsetX,
+          waveOffsetZ,
+          state.weather.waveHeightM,
+        ) + 0.035;
+        _mat4.makeTranslation(this.wakePos[i * 3], wakeY, this.wakePos[i * 3 + 2]);
         _mat4.scale(_v1.set(s * this.wakeLife[i], 1, s * this.wakeLife[i]));
       } else {
         _mat4.makeScale(0, 0, 0);
@@ -1019,8 +1131,15 @@ export class SailingSceneController {
       const latX = Math.cos(hRad) * side;
       const latZ = Math.sin(hRad) * side;
       this.sprayPos[idx * 3] = bowX + latX * 0.25;
-      this.sprayPos[idx * 3 + 1] = 0.35;
       this.sprayPos[idx * 3 + 2] = bowZ + latZ * 0.25;
+      this.sprayPos[idx * 3 + 1] = sampleGerstnerHeightAt(
+        this.elapsedSec,
+        this.sprayPos[idx * 3],
+        this.sprayPos[idx * 3 + 2],
+        waveOffsetX,
+        waveOffsetZ,
+        state.weather.waveHeightM,
+      ) + 0.35;
       this.sprayVel[idx * 3] = latX * (1.2 + Math.random() * 1.1) - Math.sin(hRad) * 1.4;
       this.sprayVel[idx * 3 + 1] = 1.6 + Math.random() * 1.5;
       this.sprayVel[idx * 3 + 2] = latZ * (1.2 + Math.random() * 1.1) + Math.cos(hRad) * 1.4;
@@ -1035,7 +1154,7 @@ export class SailingSceneController {
         this.sprayPos[i * 3 + 1] += this.sprayVel[i * 3 + 1] * dt;
         this.sprayPos[i * 3 + 2] += this.sprayVel[i * 3 + 2] * dt;
         const sc = (0.4 + (1 - this.sprayLife[i]) * 1.1) * this.sprayLife[i];
-        _mat4.makeTranslation(this.sprayPos[i * 3], Math.max(0.05, this.sprayPos[i * 3 + 1]), this.sprayPos[i * 3 + 2]);
+        _mat4.makeTranslation(this.sprayPos[i * 3], this.sprayPos[i * 3 + 1], this.sprayPos[i * 3 + 2]);
         _mat4.scale(_v1.set(sc, sc, sc));
       } else {
         _mat4.makeScale(0, 0, 0);
@@ -1193,10 +1312,9 @@ export class SailingSceneController {
         state.headingDeg,
       );
       syncBoatVisuals(this.boat, state, this.elapsedSec, waveMotion);
-      if (
-        (this.callbacks.getCameraMode() === 'first-person-cabin' && nowMs - this.lastInstrumentRedrawMs > 280) ||
-        nowMs - this.lastInstrumentRedrawMs > 1200
-      ) {
+      const cameraMode = this.callbacks.getCameraMode();
+      const atHelmOrCabin = cameraMode === 'first-person-helm' || cameraMode === 'first-person-cabin';
+      if ((atHelmOrCabin && nowMs - this.lastInstrumentRedrawMs > 280) || nowMs - this.lastInstrumentRedrawMs > 1200) {
         this.lastInstrumentRedrawMs = nowMs;
         this.textures.updateCabinInstruments(state);
       }

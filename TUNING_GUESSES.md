@@ -172,3 +172,22 @@ The last presentation pass did not change Delft residuary resistance, ITTC-57 fr
 ### Step 3: Reefing & Interior Mapping
 
 The new HUD and cabin repeater read reefLevel from shared simulation state. The last pass did not change reef-point geometry, sail area, center of effort, or sail-wear equations; use the Step 3 rows above. Verify cabin and tablet reef controls show the same reef level.
+
+### Waves: Surface Coupling & Speed Wake (src/three/oceanScene.ts, src/three/boatBuilder.ts)
+
+| Constant | Value | Meaning | How to Validate |
+|---|---:|---|---|
+| CPU horizontal-displacement inversion count | 3 iterations | Fixed-point solve maps the displaced world waterline back to the Gerstner parameter coordinate | Compare CPU height/slope with the shader surface over wave phases; measure vertical mismatch and raise the count only if visible. |
+| Rendered surface clearance | 0.025 m | Small offset above sampled water to avoid waterline z-fighting | Inspect calm and 3.3 m seas from cockpit/third-person; no gap or water cutting through hull. |
+| Near-ocean patch half-extent | 130 m | Dense surface area around the boat | Inspect wave silhouette and hull contact at patch edge on standard/software renderers. |
+| Near-ocean patch subdivisions | 224 × 224 standard, 160 × 160 software GL | Vertex density for close wave displacement | Compare silhouette smoothness and frame time on a mid-range tablet and software renderer. |
+| Surface pitch gain / clamp | 0.78, ±0.24 rad | Converts sampled longitudinal slope to boat pitch | Compare hull rotation with sampled plane under long/short swells; confirm the cap is not routinely hit. |
+| Surface roll gain / clamp | 0.68, ±0.22 rad | Converts sampled transverse slope to wave roll before the visual blend | Separate wave roll from simulated heel and confirm combined pose stays plausible in beam seas. |
+| Bow-wake speed ramp | 0.35–5.0 kt | Speed range where foam wash grows from zero to full | Compare stopped, drifting, and 2–6 kt runs; build should be smooth without a threshold pop. |
+| Bow-wake edge width | 0.12–0.58 m | Soft foam edge around the forward V | Inspect close/cockpit views at 1, 3, and 6 kt; keep the V narrow and attached to bow. |
+| Bow-wake spread / decay | 0.34 × bow distance, 0.55 × hull length | V-wave widening and fade length | Compare wake angle/length across boat sizes and speeds against reference cruising-yacht wake video. |
+| Stern-wake edge width | 0.10–0.48 m | Soft edge around each stern wake line | Inspect behind transom at low/high speed; keep twin lines visible without a broad foam slab. |
+| Stern-wake spread / decay | 0.12 × stern distance, 15 m decay length | Wake divergence and exponential fade | Compare at 2, 4, and 7 kt and across hull sizes; keep the wake attached near stern and fading with distance. |
+| Bow / stern wash contribution | 0.42 / 0.22 | Relative foam contribution from bow/stern wakes | Compare against reference yacht wakes without changing wave-crest foam. |
+| Wake texture modulation | 0.55 + 0.45 × foam texture | Breaks wake into textured foam rather than a flat stripe | Inspect calm/rough water at several speeds; texture must add detail without hiding the wake. |
+| Stern-particle surface clearance | 0.035 m | Offset for particle wake sprites above sampled water | Inspect over crests/troughs; confirm sprites neither sink nor float visibly above the surface. |

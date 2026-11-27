@@ -1424,9 +1424,9 @@ export function syncBoatVisuals(
     : Math.cos(elapsedSec * 1.1) * (0.011 + state.weather.waveHeightM * 0.009);
   boat.hullPivot.rotation.z = heelRad + waveRoll;
   boat.hullPivot.rotation.x = wavePitch;
-  // Ride live Gerstner wave crest (+ slight buoyancy freeboard reserve so sea surface sits cleanly below gunwale)
+  // Keep the modeled waterline riding the same rendered Gerstner surface.
   const heave = waveMotion
-    ? waveMotion.heaveM * 0.72 + Math.max(0, state.weather.waveHeightM - 1.0) * 0.05
+    ? waveMotion.heaveM + 0.025
     : Math.sin(elapsedSec * 1.7) * (0.045 + state.weather.waveHeightM * 0.038);
   boat.hullPivot.position.y = heave;
 

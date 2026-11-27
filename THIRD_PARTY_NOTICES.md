@@ -17,3 +17,10 @@ This project ports specific algorithms and procedural ocean patterns from extern
    - Source: `https://github.com/mblode/tiller`
    - License status audited: **No open-source license file** (`package.json` declares `"private": true`; `README.md` states *"A private project, built for the joy of it. Fair winds."* — all rights reserved unless permission is granted by the author).
    - Previously ported in Steps 1–2: Trim & luff helpers (`optimalBoomAngle`, `optimalSheet`, `luffFactor`), point-of-sail thresholds, and maneuver state machine (`SAILING` / `IN_IRONS` / `TACKING` / `GYBING` / `CRASH_GYBE`) in `src/sim/foilPhysics.ts`. No new code is copied from `tiller` in subsequent steps.
+
+
+## License Audit for the Latest Implementation (2026-11-27)
+
+- By The Lee public repository identifies the root LICENSE as Apache-2.0. The latest HUD, cabin, and ocean presentation pass did not copy code from it.
+- The public mblode/tiller repository lists no LICENSE file and its README describes the project as private. No Tiller source was copied for the latest pass. Earlier Tiller-inspired simulation ports remain attributed above.
+- The CPU ocean sampler is an algorithm port of this project's own shader function: src/three/oceanScene.ts, evalWave, mirrored in evaluateGerstnerSurface. The implementation cites that source beside the port.
