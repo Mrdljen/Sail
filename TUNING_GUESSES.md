@@ -153,3 +153,18 @@ The rows below record behavior, control, audio, and geometry tuning guesses from
 ### Step 4 (Hull): No New Hull-Resistance Guess
 
 The last presentation pass did not change Delft residuary resistance, ITTC-57 friction, wetted area, or hull-fouling equations. Existing Step 4 (Hull) rows above remain the validation record; surface sampling and wake shading below are visual coupling/effects, not hull resistance.
+
+### Step 4 (Heel): Attitude Presentation & Feedback (src/components/SailingInstrumentPanel.tsx, src/audio/sailingAudio.ts)
+
+| Constant | Value | Meaning | How to Validate |
+|---|---:|---|---|
+| Heel creak onset / full-load span | 10° / 18° (full at 28°) | Maps absolute heel to the hull/rig creak envelope | Compare with GZ curve and reef thresholds; keep it silent in ordinary flat sailing and rising before dangerous heel. |
+| Heel creak filter range | 105–160 Hz | Changes creak timbre as heel load rises | Listen on headphones/speakers at several angles; keep the cue low and unobtrusive. |
+| Heel creak full-load gain | 0.018 + 0.025 × windNorm | Relative gain at full load, scaled by wind | A/B-test in strongest gale; verify it does not mask wind, wave, or luff cues. |
+| Heel filter / gain smoothing | 0.22 s / 0.30 s | Damps timbre and volume transitions | Sweep through onset and check for clicks, pumping, or delayed feedback. |
+| Luff-noise center / modulation | 1250 Hz, ±280 Hz when luffing (±28 Hz otherwise) | Synthetic flutter-noise band | Compare drawing and luffing sail states at multiple wind speeds; tune until flutter is detectable but not tonal. |
+| Luff-noise gain | 0.07 + 0.035 × windNorm while luffing | Relative gain when a sail is luffing | Verify audibility in quiet conditions and subordination to wind in a squall. |
+| Luff filter / gain smoothing | 0.04 s / 0.08 s | Response to sail-state changes | Toggle luffing repeatedly; check for zipper-like artifacts or abrupt onset. |
+| Winch ratchet debounce | 0.11 s | Minimum spacing between ratchet cues | Trim rapidly from touch and 3D winch; one action should sound once without chatter. |
+| Winch ratchet notes / spacing | 3 × (620 + 95*i) Hz, 35 ms spacing | Three synthetic pawl clicks per cue | Compare with a short manual winch recording at low playback level; keep clicks distinct from switch sounds. |
+| Winch ratchet gain / tone duration | 0.08 / 25 ms | Click level and decay | Test on tablet speakers and headphones; confirm clicks are audible without harshness. |

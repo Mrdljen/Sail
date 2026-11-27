@@ -5,8 +5,13 @@ export class SailingAudioEngine {
   private windGain: GainNode | null = null;
   private waveFilter: BiquadFilterNode | null = null;
   private waveGain: GainNode | null = null;
+  private sailFilter: BiquadFilterNode | null = null;
+  private sailGain: GainNode | null = null;
+  private heelFilter: BiquadFilterNode | null = null;
+  private heelGain: GainNode | null = null;
   private muted = false;
   private started = false;
+  private lastWinchSoundTime = Number.NEGATIVE_INFINITY;
 
   public isMuted(): boolean {
     return this.muted;
@@ -86,23 +91,69 @@ export class SailingAudioEngine {
       waveGain.connect(master);
       waveSource.start();
 
+      // Dacron luff flutter: a soft band of wind noise that follows the sail state.
+      const sailSource = ctx.createBufferSource();
+      sailSource.buffer = noiseBuffer;
+      sailSource.loop = true;
+      const sailFilter = ctx.createBiquadFilter();
+      sailFilter.type = 'bandpass';
+      sailFilter.frequency.value = 1450;
+      sailFilter.Q.value = 0.75;
+      const sailGain = ctx.createGain();
+      sailGain.gain.value = 0;
+      sailSource.connect(sailFilter);
+      sailFilter.connect(sailGain);
+      sailGain.connect(master);
+      sailSource.start();
+
+      // Low, quiet hull and rig creak that rises when the boat heels hard.
+      const heelSource = ctx.createBufferSource();
+      heelSource.buffer = noiseBuffer;
+      heelSource.loop = true;
+      const heelFilter = ctx.createBiquadFilter();
+      heelFilter.type = 'bandpass';
+      heelFilter.frequency.value = 125;
+      heelFilter.Q.value = 0.7;
+      const heelGain = ctx.createGain();
+      heelGain.gain.value = 0;
+      heelSource.connect(heelFilter);
+      heelFilter.connect(heelGain);
+      heelGain.connect(master);
+      heelSource.start();
+
       this.windFilter = windFilter;
       this.windGain = windGain;
       this.waveFilter = waveFilter;
       this.waveGain = waveGain;
+      this.sailFilter = sailFilter;
+      this.sailGain = sailGain;
+      this.heelFilter = heelFilter;
+      this.heelGain = heelGain;
       this.started = true;
     } catch {
       // AudioContext unavailable in headless/sandbox environments
     }
   }
 
-  public updateAtmosphere(windKts: number, boatSpeedKts: number, rainIntensity: number, paused: boolean): void {
-    if (!this.ctx || !this.windFilter || !this.windGain || !this.waveFilter || !this.waveGain) return;
+  public updateAtmosphere(
+    windKts: number,
+    boatSpeedKts: number,
+    rainIntensity: number,
+    paused: boolean,
+    heelDeg = 0,
+    isLuffing = false,
+  ): void {
+    if (
+      !this.ctx || !this.windFilter || !this.windGain || !this.waveFilter || !this.waveGain ||
+      !this.sailFilter || !this.sailGain || !this.heelFilter || !this.heelGain
+    ) return;
     const now = this.ctx.currentTime;
 
     if (paused || this.muted) {
       this.windGain.gain.setTargetAtTime(0, now, 0.1);
       this.waveGain.gain.setTargetAtTime(0, now, 0.1);
+      this.sailGain.gain.setTargetAtTime(0, now, 0.1);
+      this.heelGain.gain.setTargetAtTime(0, now, 0.1);
       return;
     }
 
@@ -113,6 +164,12 @@ export class SailingAudioEngine {
     const speedNorm = Math.min(1.4, boatSpeedKts / 7.5);
     this.waveFilter.frequency.setTargetAtTime(180 + speedNorm * 420, now, 0.2);
     this.waveGain.gain.setTargetAtTime(0.04 + speedNorm * 0.18, now, 0.2);
+
+    this.sailFilter.frequency.setTargetAtTime(1250 + Math.sin(now * 18) * (isLuffing ? 280 : 28), now, 0.04);
+    this.sailGain.gain.setTargetAtTime(isLuffing ? 0.07 + windNorm * 0.035 : 0, now, 0.08);
+    const heelLoad = Math.max(0, Math.min(1, (Math.abs(heelDeg) - 10) / 18));
+    this.heelFilter.frequency.setTargetAtTime(105 + heelLoad * 55, now, 0.22);
+    this.heelGain.gain.setTargetAtTime(heelLoad * (0.018 + windNorm * 0.025), now, 0.3);
   }
 
   public playSwitchClick(): void {
@@ -135,6 +192,8 @@ export class SailingAudioEngine {
     this.ensureStarted();
     if (!this.ctx || !this.masterGain || this.muted) return;
     const base = this.ctx.currentTime;
+    if (base - this.lastWinchSoundTime < 0.11) return;
+    this.lastWinchSoundTime = base;
     for (let i = 0; i < 3; i++) {
       const osc = this.ctx.createOscillator();
       const gain = this.ctx.createGain();

@@ -334,6 +334,8 @@ export default function App() {
           next.boatSpeedKts,
           next.weather.rainIntensity,
           screenRef.current !== 'playing',
+          next.heelDeg,
+          next.isLuffing,
         );
 
         const now = performance.now();
