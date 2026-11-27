@@ -132,3 +132,20 @@ The rows below record behavior, control, audio, and geometry tuning guesses from
 | Low-battery display threshold | 20% | Changes charge readout to warning color | Play through discharge/recharge and verify the color transition matches the intended low-charge cue. |
 | Wind-warning color scale | 35 kt | Normalizes footer wind color | Compare calm and gale scenarios; keep this distinct from the simulation storm-warning threshold. |
 | Artificial-horizon pitch gain / limit | 2.1 px/degree, ±40 px | Pitch movement and limit in the attitude window | Compare 0°, ±10°, ±20° against a reference horizon and confirm the scale reads well at panel size. |
+
+### Step 2: Tablet Helm & Cabin Controls (src/components/SailingInstrumentPanel.tsx, src/three/boatBuilder.ts)
+
+| Constant | Value | Meaning | How to Validate |
+|---|---:|---|---|
+| Drag deadband | 7 CSS px | Pointer motion before applying helm input | Test finger and stylus on small/large tablets; a stationary touch should not steer. |
+| Drag steering gain | 0.28°/CSS px | Converts pointer movement into a heading step | Complete a tack and hold course with short and long drags; compare precision with the ±3° buttons. |
+| Per-event drag clamp | ±9° | Maximum heading change from one pointer event | Test fast swipes at 30/60 fps; a missed frame must not create an abrupt turn. |
+| Sheet control step | 10 percentage points | Trim change per mainsheet/jibsheet tap | Verify repeated taps trim smoothly from close-hauled to eased without overshoot. |
+| Sheet control limits | 5–100% | Lower/upper touch-control bounds | Tap repeatedly at both endpoints and verify the simulation and display stay in range. |
+| Cabin eye anchor | (0.10, 0.66, +0.40 roofLength) m | Procedural interior camera position, scaled by boat size | Check height and clearance against each generated cabin mesh in first-person view. |
+| Cabin look anchor | (-0.06, 0.43, -0.16 roofLength) m | Procedural interior camera aim, scaled by boat size | Check sightlines to helm, companionway, and fittings for every generated cabin. |
+| 3D wheel-to-rudder visual gain | 0.7 | Wheel rotation relative to rudder angle | Sweep both rudder stops and verify direction/travel are clear without changing rudder simulation. |
+| 3D wheel rim radius / tube | 0.40 m / 0.025 m | Procedural wheel proportions | Compare with common 600–800 mm yacht wheels and check clearance at each hull scale. |
+| Winch drum top/base radius and height | 0.075 m / 0.095 m / 0.14 m | Procedural self-tailing winch proportions | Compare with common 20–40 ft yacht winches and inspect cockpit reach at each hull scale. |
+| Winch crank length / knob radius | 0.20 m / 0.028 m | Procedural handle and grip size | Check hand-scale plausibility and clearance from coaming and adjacent winch. |
+| Winch placement | ±0.34 beam, 0.54 m local y, 0.15 m forward of cockpit center | Port/starboard winch placement | Inspect each cockpit and verify the mainsheet/jibsheet controls match their rig lines. |

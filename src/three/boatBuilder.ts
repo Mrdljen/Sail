@@ -35,6 +35,8 @@ export interface BuiltBoat {
   staysailMesh: THREE.Mesh | null;
   rudderMesh: THREE.Mesh;
   helmControlMesh: THREE.Object3D;
+  mainsheetWinch: THREE.Group;
+  jibsheetWinch: THREE.Group;
   windvanePaddle: THREE.Mesh;
   compassCardMesh: THREE.Mesh;
   navLightMat: THREE.MeshStandardMaterial;
@@ -1069,6 +1071,27 @@ export function buildSailboatModel(
   binnacle.add(compassCardMesh);
   registerInteractive(binnacle, 'toggle-instruments', 'Binnacle Compass & Instruments');
 
+  // Cockpit waterproof wind / log / depth repeater on the steering pedestal.
+  const helmHousingGeo = new THREE.BoxGeometry(0.62 * scaleFactor, 0.44 * scaleFactor, 0.075 * scaleFactor);
+  const helmScreenGeo = new THREE.PlaneGeometry(0.55 * scaleFactor, 0.36 * scaleFactor);
+  const helmHousingMat = new THREE.MeshStandardMaterial({ color: 0x111a21, roughness: 0.34, metalness: 0.5 });
+  const helmScreenMat = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    map: textures.helmInstrumentTex,
+    emissive: 0xffffff,
+    emissiveMap: textures.helmInstrumentTex,
+    emissiveIntensity: 0.82,
+    roughness: 0.18,
+  });
+  disposables.push(helmHousingGeo, helmScreenGeo, helmHousingMat, helmScreenMat);
+  const helmDisplay = new THREE.Mesh(helmHousingGeo, helmHousingMat);
+  helmDisplay.position.set(0, 0.96 * scaleFactor, cockpitZ - cockpitLen * 0.16);
+  hullPivot.add(helmDisplay);
+  const helmScreen = new THREE.Mesh(helmScreenGeo, helmScreenMat);
+  helmScreen.position.set(0, 0, 0.039 * scaleFactor);
+  helmDisplay.add(helmScreen);
+  registerInteractive(helmDisplay, 'toggle-instruments', 'Cockpit Wind / Speed / Depth Repeater');
+
   let helmControlMesh: THREE.Object3D;
   if (spec.hasWheel) {
     const wheelGroup = new THREE.Group();
@@ -1105,16 +1128,26 @@ export function buildSailboatModel(
 
   // Sheet Winches
   const winchGeo = new THREE.CylinderGeometry(0.075 * scaleFactor, 0.095 * scaleFactor, 0.14 * scaleFactor, 14);
-  disposables.push(winchGeo);
-  const mainWinch = new THREE.Mesh(winchGeo, brassMat);
-  mainWinch.position.set(-B * 0.34, 0.54 * scaleFactor, cockpitZ - 0.15 * scaleFactor);
-  hullPivot.add(mainWinch);
-  registerInteractive(mainWinch, 'trim-main-in', 'Mainsheet Winch (Click to Trim)');
-
-  const jibWinch = new THREE.Mesh(winchGeo, stainlessMat);
-  jibWinch.position.set(B * 0.34, 0.54 * scaleFactor, cockpitZ - 0.15 * scaleFactor);
-  hullPivot.add(jibWinch);
-  registerInteractive(jibWinch, 'trim-jib-in', 'Jib Sheet Winch (Click to Trim)');
+  const winchHandleGeo = new THREE.BoxGeometry(0.20 * scaleFactor, 0.022 * scaleFactor, 0.028 * scaleFactor);
+  const winchKnobGeo = new THREE.SphereGeometry(0.028 * scaleFactor, 8, 6);
+  disposables.push(winchGeo, winchHandleGeo, winchKnobGeo);
+  const makeSheetWinch = (x: number, material: THREE.Material, action: InteractiveAction, label: string) => {
+    const group = new THREE.Group();
+    group.position.set(x, 0.54 * scaleFactor, cockpitZ - 0.15 * scaleFactor);
+    const drum = new THREE.Mesh(winchGeo, material);
+    group.add(drum);
+    const crank = new THREE.Mesh(winchHandleGeo, stainlessMat);
+    crank.position.set(0.09 * scaleFactor, 0.085 * scaleFactor, 0);
+    group.add(crank);
+    const knob = new THREE.Mesh(winchKnobGeo, coachroofMat);
+    knob.position.set(0.19 * scaleFactor, 0.085 * scaleFactor, 0);
+    group.add(knob);
+    hullPivot.add(group);
+    registerInteractive(group, action, label);
+    return group;
+  };
+  const mainsheetWinch = makeSheetWinch(-B * 0.34, brassMat, 'trim-main-in', 'Mainsheet Winch (Click to Trim)');
+  const jibsheetWinch = makeSheetWinch(B * 0.34, stainlessMat, 'trim-jib-in', 'Jib Sheet Winch (Click to Trim)');
 
   // Coiled Cockpit Sheet Ropes beside winches (tides-of-fortune deck craft)
   const ropeCoilGeo = new THREE.TorusGeometry(0.085 * scaleFactor, 0.018 * scaleFactor, 7, 16);
@@ -1324,8 +1357,8 @@ export function buildSailboatModel(
   const helmEyeLocal = new THREE.Vector3(0.56 * scaleFactor, 1.74 * scaleFactor, cockpitZ + cockpitLen * 0.24);
   const helmLookLocal = new THREE.Vector3(0.46 * scaleFactor, 1.38 * scaleFactor, -L * 0.92);
 
-  const cabinEyeLocal = new THREE.Vector3(0.0, 0.57 * scaleFactor, roofZ + roofLength * 0.28);
-  const cabinLookLocal = new THREE.Vector3(0.0, 0.48 * scaleFactor, roofZ - roofLength * 0.42);
+  const cabinEyeLocal = new THREE.Vector3(0.10 * scaleFactor, 0.66 * scaleFactor, roofZ + roofLength * 0.40);
+  const cabinLookLocal = new THREE.Vector3(-0.06 * scaleFactor, 0.43 * scaleFactor, roofZ - roofLength * 0.16);
 
   return {
     root,
@@ -1336,6 +1369,8 @@ export function buildSailboatModel(
     staysailMesh,
     rudderMesh,
     helmControlMesh,
+    mainsheetWinch,
+    jibsheetWinch,
     windvanePaddle,
     compassCardMesh,
     navLightMat,
@@ -1401,6 +1436,8 @@ export function syncBoatVisuals(
     boat.helmControlMesh.rotation.y = -rudRad * 0.7;
     boat.helmControlMesh.rotation.z = rudRad * 2.2;
   }
+  boat.mainsheetWinch.rotation.y = (state.mainsheetPct / 100) * Math.PI * 2;
+  boat.jibsheetWinch.rotation.y = (state.jibsheetPct / 100) * Math.PI * 2;
 
   boat.compassCardMesh.rotation.z = (state.headingDeg * Math.PI) / 180;
 

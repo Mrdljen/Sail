@@ -517,10 +517,12 @@ export default function App() {
             });
           }}
           onSetMainsheet={(pct) => {
+            audioRef.current?.playWinchRatchet();
             commitSim({ ...simRef.current, mainsheetPct: clamp(pct, 5, 100) });
           }}
           onSetJibsheet={(pct) => {
-            commitSim({ ...simRef.current, jibsheetPct: pct });
+            audioRef.current?.playWinchRatchet();
+            commitSim({ ...simRef.current, jibsheetPct: clamp(pct, 5, 100) });
           }}
           onToggleJib={() => {
             audioRef.current?.playWinchRatchet();
