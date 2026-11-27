@@ -82,27 +82,6 @@ function evaluateGerstnerSurface(
   return { height, horizontalX, horizontalZ, slopeX, slopeZ };
 }
 
-function createFarOceanGeometry(size: number, segments: number, openingHalfExtent: number): THREE.BufferGeometry {
-  const geometry = new THREE.PlaneGeometry(size, size, segments, segments);
-  geometry.rotateX(-Math.PI / 2);
-  const positions = geometry.getAttribute('position');
-  const indices = geometry.getIndex();
-  if (!indices) return geometry;
-  const filtered: number[] = [];
-  const insideOpening = (vertex: number) =>
-    Math.abs(positions.getX(vertex)) < openingHalfExtent &&
-    Math.abs(positions.getZ(vertex)) < openingHalfExtent;
-  for (let i = 0; i < indices.count; i += 3) {
-    const a = indices.getX(i);
-    const b = indices.getX(i + 1);
-    const c = indices.getX(i + 2);
-    if (insideOpening(a) || insideOpening(b) || insideOpening(c)) continue;
-    filtered.push(a, b, c);
-  }
-  geometry.setIndex(filtered);
-  return geometry;
-}
-
 function sampleGerstnerMotion(
   elapsedSec: number,
   offsetX: number,
@@ -530,16 +509,8 @@ export class SailingSceneController {
 
     // Upgraded Coupled 6-Wave Gerstner Ocean with Jacobian Whitecaps, Fresnel/SSS & Hull Cavity Exclusion
     const oceanSegs = this.isSoftwareGl ? 76 : 120;
-    const oceanCellSize = 1400 / oceanSegs;
-    const nearOceanHalfSize = Math.ceil(130 / oceanCellSize) * oceanCellSize;
-    const oceanGeo = createFarOceanGeometry(1400, oceanSegs, 130);
-    const nearOceanGeo = new THREE.PlaneGeometry(
-      nearOceanHalfSize * 2,
-      nearOceanHalfSize * 2,
-      this.isSoftwareGl ? 160 : 224,
-      this.isSoftwareGl ? 160 : 224,
-    );
-    nearOceanGeo.rotateX(-Math.PI / 2);
+    const oceanGeo = new THREE.PlaneGeometry(1400, 1400, oceanSegs, oceanSegs);
+    oceanGeo.rotateX(-Math.PI / 2);
     const oceanMat = new THREE.MeshStandardMaterial({
       color: 0xffffff,
       roughness: 0.22,
@@ -765,12 +736,10 @@ export class SailingSceneController {
         `,
       );
     };
-    this.disposables.push(oceanGeo, nearOceanGeo, oceanMat);
+    this.disposables.push(oceanGeo, oceanMat);
     const oceanMesh = new THREE.Mesh(oceanGeo, oceanMat);
     oceanMesh.receiveShadow = !this.isSoftwareGl;
-    const nearOceanMesh = new THREE.Mesh(nearOceanGeo, oceanMat);
-    nearOceanMesh.receiveShadow = !this.isSoftwareGl;
-    scene.add(oceanMesh, nearOceanMesh);
+    scene.add(oceanMesh);
 
     // Islands & Distant Harbor Vessels
     this.departureIsland = createIslandGroup(1.2, this.isSoftwareGl, true);

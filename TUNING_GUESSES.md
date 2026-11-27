@@ -179,8 +179,7 @@ The new HUD and cabin repeater read reefLevel from shared simulation state. The 
 |---|---:|---|---|
 | CPU horizontal-displacement inversion count | 3 iterations | Fixed-point solve maps the displaced world waterline back to the Gerstner parameter coordinate | Compare CPU height/slope with the shader surface over wave phases; measure vertical mismatch and raise the count only if visible. |
 | Rendered surface clearance | 0.025 m | Small offset above sampled water to avoid waterline z-fighting | Inspect calm and 3.3 m seas from cockpit/third-person; no gap or water cutting through hull. |
-| Near-ocean patch half-extent | 130 m | Dense surface area around the boat | Inspect wave silhouette and hull contact at patch edge on standard/software renderers. |
-| Near-ocean patch subdivisions | 224 × 224 standard, 160 × 160 software GL | Vertex density for close wave displacement | Compare silhouette smoothness and frame time on a mid-range tablet and software renderer. |
+| Ocean plane subdivisions | 120 standard, 76 software GL | Original single 1400 m × 1400 m ocean mesh resolution | Compare the displaced wave silhouette and hull contact in both renderers, then check frame time on target hardware. |
 | Surface pitch gain / clamp | 0.78, ±0.24 rad | Converts sampled longitudinal slope to boat pitch | Compare hull rotation with sampled plane under long/short swells; confirm the cap is not routinely hit. |
 | Surface roll gain / clamp | 0.68, ±0.22 rad | Converts sampled transverse slope to wave roll before the visual blend | Separate wave roll from simulated heel and confirm combined pose stays plausible in beam seas. |
 | Bow-wake speed ramp | 0.35–5.0 kt | Speed range where foam wash grows from zero to full | Compare stopped, drifting, and 2–6 kt runs; build should be smooth without a threshold pop. |
