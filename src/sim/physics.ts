@@ -13,6 +13,13 @@ import { computeGzRightingMomentNm, evaluateHullResistance } from './hullPhysics
 import { getRealismProfile } from './realism';
 import { computeRiggingFailureChance, evaluateWearFactors, HYDRO_TUNING, WEAR_TUNING } from './tuning';
 import { computeGreatCircleNm, HANDCRAFTED_HUBS } from './worldHubs';
+import { archetypeForHub, portRegionForHub } from '../world/generators';
+import {
+  COVE_ARRIVAL_DISTANCE_NM,
+  PASSAGE_NM_TO_WORLD_M,
+  islandApproachOffsetM,
+  sampleIslandDepthM,
+} from '../world/navigationTerrain';
 import type {
   BoatId,
   CharterContract,
@@ -90,23 +97,62 @@ export function computeApparentWind(
 }
 
 /**
- * Computes water depth in meters along the passage, including Ship Happens-style
- * harbor approach channel shoals if straying outside |zNm| > 0.72 NM near port.
+ * Combines the open-water chart profile with the same seeded island heightfields
+ * used by the renderer. Shoals outside the approach corridor remain navigable hazards.
  */
-export function computeDepthAtPassage(xNm: number, zNm: number, totalDistanceNm: number): number {
+export function computeDepthAtPassage(
+  xNm: number,
+  zNm: number,
+  totalDistanceNm: number,
+  fromHubId = 'lanzarote',
+  toHubId = 'la-gomera',
+): number {
   const distFromStart = Math.hypot(xNm, zNm);
   const distFromDest = Math.hypot(totalDistanceNm - xNm, zNm);
   const nearestCoastNm = Math.min(distFromStart, distFromDest);
 
+  let depthM = nearestCoastNm < 0.35
+    ? 5.8
+    : nearestCoastNm < 1.2
+      ? lerp(6.0, 14.0, (nearestCoastNm - 0.35) / 0.85)
+      : nearestCoastNm < 4.0
+        ? lerp(14.0, 85.0, (nearestCoastNm - 1.2) / 2.8)
+        : lerp(85, 2400, clamp((nearestCoastNm - 4.0) / 18.0, 0, 1));
+
+  const fromHub = HANDCRAFTED_HUBS.find((hub) => hub.id === fromHubId) ?? HANDCRAFTED_HUBS[0];
+  const toHub = HANDCRAFTED_HUBS.find((hub) => hub.id === toHubId) ?? HANDCRAFTED_HUBS[1];
+  const fromArchetype = archetypeForHub(fromHub);
+  const toArchetype = archetypeForHub(toHub);
+  const fromRegion = portRegionForHub(fromHub);
+  const toRegion = portRegionForHub(toHub);
+  const fromOffset = islandApproachOffsetM(fromHub.id, fromRegion, fromArchetype);
+  const toOffset = islandApproachOffsetM(toHub.id, toRegion, toArchetype);
+
+  // Match updateEnvironment's moving island transforms, including the rotated destination.
+  const departureDepth = sampleIslandDepthM(
+    fromHub.id,
+    fromRegion,
+    fromArchetype,
+    xNm * PASSAGE_NM_TO_WORLD_M + fromOffset,
+    zNm * PASSAGE_NM_TO_WORLD_M,
+  );
+  const destinationDepth = sampleIslandDepthM(
+    toHub.id,
+    toRegion,
+    toArchetype,
+    (totalDistanceNm - xNm) * PASSAGE_NM_TO_WORLD_M + toOffset,
+    -zNm * PASSAGE_NM_TO_WORLD_M,
+  );
+
+  if (departureDepth !== null) depthM = Math.min(depthM, departureDepth);
+  if (destinationDepth !== null) depthM = Math.min(depthM, destinationDepth);
+
   if (nearestCoastNm < 3.2 && Math.abs(zNm) > 0.72) {
     const shoalFactor = clamp((Math.abs(zNm) - 0.72) / 1.1, 0, 1);
-    return lerp(4.4, 1.5, shoalFactor);
+    depthM = Math.min(depthM, lerp(4.4, 1.5, shoalFactor));
   }
 
-  if (nearestCoastNm < 0.35) return 5.8;
-  if (nearestCoastNm < 1.2) return lerp(6.0, 14.0, (nearestCoastNm - 0.35) / 0.85);
-  if (nearestCoastNm < 4.0) return lerp(14.0, 85.0, (nearestCoastNm - 1.2) / 2.8);
-  return lerp(85, 2400, clamp((nearestCoastNm - 4.0) / 18.0, 0, 1));
+  return depthM;
 }
 
 export function createInitialSimulationState(
@@ -243,7 +289,7 @@ export function createInitialSimulationState(
       distanceSailedNm: 0,
       xNm: 2.2,
       zNm: 0,
-      depthM: 28,
+      depthM: computeDepthAtPassage(2.2, 0, totalDistanceNm, origin.id, dest.id),
       elapsedHours: 0,
       peakSpeedKts: initSpeedKts,
       maxGustKts: 17,
@@ -546,6 +592,8 @@ function stepFixedSubstep(
     prev.passage.xNm,
     prev.passage.zNm,
     prev.passage.totalDistanceNm,
+    prev.passage.fromHubId,
+    prev.passage.toHubId,
   );
 
   // Anchored physics branch
@@ -766,7 +814,13 @@ function stepFixedSubstep(
   const distNmStep = boatSpeedKts * simHoursDelta;
   const nextX = prev.passage.xNm + velX * simHoursDelta;
   const nextZ = prev.passage.zNm + velZ * simHoursDelta;
-  const nextDepthM = computeDepthAtPassage(nextX, nextZ, prev.passage.totalDistanceNm);
+  const nextDepthM = computeDepthAtPassage(
+    nextX,
+    nextZ,
+    prev.passage.totalDistanceNm,
+    prev.passage.fromHubId,
+    prev.passage.toHubId,
+  );
 
   // 6. Wear & Maintenance Degradation + Equipment Chaining
   const wearScale = profile.wearRateScale;
@@ -870,7 +924,7 @@ function stepFixedSubstep(
   }
 
   const distToDest = Math.hypot(prev.passage.totalDistanceNm - nextX, nextZ);
-  const arrivedAtCove = distToDest <= 2.2;
+  const arrivedAtCove = distToDest <= COVE_ARRIVAL_DISTANCE_NM;
 
   let alertMessage: string | null = null;
   if (groundedThisTick) {

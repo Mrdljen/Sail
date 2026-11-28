@@ -214,8 +214,8 @@ test('Chandlery purchase, locker capacity enforcement, spare repair, and 5-boat 
 });
 
 test('Harbor channel shoaling hazard, boat.cfg wing_sur tuning, and NMEA 0183 checksums', () => {
-  const channelDepth = computeDepthAtPassage(1.5, 0.1, 100);
-  const shoalDepth = computeDepthAtPassage(1.5, 1.5, 100);
+  const channelDepth = computeDepthAtPassage(2.4, 0.1, 100);
+  const shoalDepth = computeDepthAtPassage(2.4, 1.5, 100);
   assert.ok(shoalDepth < 3.0 && shoalDepth < channelDepth, 'Straying outside harbor channel shoals steeply');
 
   const base = createInitialSimulationState('elan-19');
@@ -227,6 +227,21 @@ test('Harbor channel shoaling hazard, boat.cfg wing_sur tuning, and NMEA 0183 ch
   const nmea = buildNmeaSentences(base);
   assert.match(nmea.gprmc, /^\$GPRMC,.*\*[0-9A-F]{2}$/);
   assert.match(nmea.iimwv, /^\$IIMWV,.*\*[0-9A-F]{2}$/);
+});
+
+test('generated island soundings stay safe at both landfalls and ground backtracking into shore', () => {
+  const departureDepth = computeDepthAtPassage(2.2, 0, 100, 'lanzarote', 'la-gomera');
+  const destinationDepth = computeDepthAtPassage(97.8, 0, 100, 'lanzarote', 'la-gomera');
+  const shorelineDepth = computeDepthAtPassage(0.5, 0, 100, 'lanzarote', 'la-gomera');
+
+  assert.ok(departureDepth > 0 && departureDepth < 40, `Expected shallow water at departure, got ${departureDepth}m`);
+  assert.ok(destinationDepth > 0 && destinationDepth < 40, `Expected shallow water at arrival, got ${destinationDepth}m`);
+  assert.ok(shorelineDepth < 0, `Expected the generated Lanzarote terrain to ground a vessel, got ${shorelineDepth}m`);
+
+  for (const hub of HANDCRAFTED_HUBS) {
+    const approach = computeDepthAtPassage(2.2, 0, 100, hub.id, 'la-gomera');
+    assert.ok(approach > 0, `${hub.name} approach should begin offshore, got ${approach}m`);
+  }
 });
 
 test('Non-fatal failure recovery resolves dismasting/hull/supply distress cleanly without wiping voyage', () => {

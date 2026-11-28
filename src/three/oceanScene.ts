@@ -20,6 +20,8 @@ import { createProceduralTextures } from './proceduralTextures';
 import { isWebGL2UltraWaterSupported, UltraWaterOcean } from './ultraWater';
 import { HANDCRAFTED_HUBS } from '../sim/worldHubs';
 import { archetypeForHub, createIslandGroup, portRegionForHub } from '../world/IslandWorld';
+import { islandApproachOffsetM, PASSAGE_NM_TO_WORLD_M } from '../world/navigationTerrain';
+import { islandRadiusForArchetype } from '../world/generators';
 import type {
   BoatId,
   CameraViewMode,
@@ -995,25 +997,45 @@ export class SailingSceneController {
     );
 
     // Position Departure & Destination Islands + Distant Harbor Vessels
-    const nmToM = 55;
-    const depX = (0 - state.passage.xNm) * nmToM - 135;
-    const depZ = (0 - state.passage.zNm) * nmToM - 55;
+    const nmToM = PASSAGE_NM_TO_WORLD_M;
+    const departureArchetype = archetypeForHub(departureHub);
+    const destinationArchetype = archetypeForHub(destinationHub);
+    const depOffset = islandApproachOffsetM(
+      departureHub.id,
+      portRegionForHub(departureHub),
+      departureArchetype,
+    );
+    const destOffset = islandApproachOffsetM(
+      destinationHub.id,
+      portRegionForHub(destinationHub),
+      destinationArchetype,
+    );
+    const depX = -state.passage.xNm * nmToM - depOffset;
+    const depZ = -state.passage.zNm * nmToM;
     this.departureIsland.group.position.set(depX, 0, depZ);
     this.departureIsland.updateLod(this.camera.position);
 
-    const destX = (state.passage.totalDistanceNm - state.passage.xNm) * nmToM + 125;
-    const destZ = (0 - state.passage.zNm) * nmToM - 30;
+    const destX = (state.passage.totalDistanceNm - state.passage.xNm) * nmToM + destOffset;
+    const destZ = -state.passage.zNm * nmToM;
     this.destinationIsland.group.position.set(destX, 0, destZ);
     this.destinationIsland.updateLod(this.camera.position);
 
     // Two distant harbor vessels gently cruising/tacking near departure & destination coves
     const v0 = this.harborVessels[0].group;
-    v0.position.set(depX + 165 + Math.sin(this.elapsedSec * 0.08) * 35, 0, depZ + 95);
+    v0.position.set(
+      depX + islandRadiusForArchetype(departureArchetype) + 42 + Math.sin(this.elapsedSec * 0.08) * 35,
+      0,
+      depZ + 45,
+    );
     v0.rotation.y = Math.cos(this.elapsedSec * 0.08) * 0.6 + 0.8;
     v0.visible = this.departureIsland.group.visible;
 
     const v1 = this.harborVessels[1].group;
-    v1.position.set(destX - 155, 0, destZ + 80 + Math.cos(this.elapsedSec * 0.07) * 32);
+    v1.position.set(
+      destX - islandRadiusForArchetype(destinationArchetype) - 42,
+      0,
+      destZ + 45 + Math.cos(this.elapsedSec * 0.07) * 32,
+    );
     v1.rotation.y = -0.7;
     v1.visible = this.destinationIsland.group.visible;
   }

@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { archetypeForHub, generateIslandFromNoise, generatePort, portRegionForHub } from './generationAlgorithms';
+import {
+  archetypeForHub,
+  createIslandHeightSamplerFromNoise,
+  generateIslandFromNoise,
+  generatePort,
+  portRegionForHub,
+} from './generationAlgorithms';
 import { HANDCRAFTED_HUBS } from '../sim/worldHubs';
 
 const seededNoise = (x: number, y: number, z: number): number =>
@@ -26,6 +32,17 @@ test('island terrain and instances reproduce from the hub seed', () => {
 
   const other = generateIslandFromNoise('la-gomera', 'volcanic', 'near', seededNoise);
   assert.notDeepEqual(first.positions, other.positions);
+});
+
+test('navigation sampler returns the same seeded coastline and seabed as rendered terrain', () => {
+  const terrain = generateIslandFromNoise('lanzarote:Canary Islands', 'volcanic', 'near', seededNoise);
+  const sampler = createIslandHeightSamplerFromNoise('lanzarote:Canary Islands', 'volcanic', seededNoise);
+  const rowLength = Math.sqrt(terrain.positions.length / 3) | 0;
+  const centerIndex = (rowLength >> 1) * rowLength + (rowLength >> 1);
+
+  assert.equal(sampler.radiusM, terrain.radiusM);
+  assert.equal(sampler.portCoastX, terrain.portCoastX);
+  assert.ok(Math.abs(sampler.heightAt(0, 0) - terrain.positions[centerIndex * 3 + 1]) < 0.00001);
 });
 
 test('far island LOD has fewer terrain and vegetation instances', () => {

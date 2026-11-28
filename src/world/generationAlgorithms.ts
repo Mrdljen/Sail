@@ -35,6 +35,13 @@ export interface IslandTerrainData {
   rocks: Float32Array;
 }
 
+export interface IslandHeightSampler {
+  radiusM: number;
+  extentM: number;
+  portCoastX: number;
+  heightAt: (x: number, z: number) => number;
+}
+
 export interface PortBuilding {
   x: number;
   z: number;
@@ -76,6 +83,10 @@ const ISLAND_PROFILES: Record<IslandArchetype, IslandProfile> = {
   atoll: { radiusM: 315, peakHeightM: 14, slopePower: 1.15, coastNoiseM: 18, treeCount: 28, rockCount: 18 },
 };
 
+export function islandRadiusForArchetype(archetype: IslandArchetype): number {
+  return ISLAND_PROFILES[archetype].radiusM;
+}
+
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
@@ -83,6 +94,20 @@ function clamp(value: number, min: number, max: number): number {
 function smoothstep(edge0: number, edge1: number, value: number): number {
   const t = clamp((value - edge0) / (edge1 - edge0), 0, 1);
   return t * t * (3 - 2 * t);
+}
+
+function findPortCoastX(radiusM: number, heightAt: (x: number, z: number) => number): number {
+  let portCoastX = radiusM;
+  let crossedLand = false;
+  for (let x = -radiusM * 1.15; x <= radiusM * 1.45; x += 3) {
+    const isLand = heightAt(x, 0) > 0;
+    if (isLand) crossedLand = true;
+    else if (crossedLand) {
+      portCoastX = x;
+      break;
+    }
+  }
+  return portCoastX;
 }
 
 export function seedNumber(seed: Seed): number {
@@ -201,6 +226,21 @@ function makeHeightSampler(
   return { profile, heightAt };
 }
 
+/** Exposes the exact terrain field used by the renderer to navigation and shoreline systems. */
+export function createIslandHeightSamplerFromNoise(
+  seed: Seed,
+  archetype: IslandArchetype,
+  noise: Noise3D,
+): IslandHeightSampler {
+  const { profile, heightAt } = makeHeightSampler(seedNumber(seed), archetype, noise);
+  return {
+    radiusM: profile.radiusM,
+    extentM: profile.radiusM * 1.38,
+    portCoastX: findPortCoastX(profile.radiusM, heightAt),
+    heightAt,
+  };
+}
+
 function scatterInstances(
   seed: number,
   profile: IslandProfile,
@@ -308,16 +348,7 @@ export function generateIslandFromNoise(
     }
   }
 
-  let portCoastX = profile.radiusM;
-  let crossedLand = false;
-  for (let x = -profile.radiusM * 1.15; x <= profile.radiusM * 1.45; x += 3) {
-    const isLand = heightAt(x, 0) > 0;
-    if (isLand) crossedLand = true;
-    else if (crossedLand) {
-      portCoastX = x;
-      break;
-    }
-  }
+  const portCoastX = findPortCoastX(profile.radiusM, heightAt);
 
   const scattered = scatterInstances(numericSeed, profile, archetype, detail, heightAt);
   return {
