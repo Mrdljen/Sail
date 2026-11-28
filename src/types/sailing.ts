@@ -236,6 +236,7 @@ export interface WorldHub {
   orderIndex: number;
   description: string;
   isProcedural?: boolean;
+  routeNetwork?: 'trade-wind' | 'croatia-adriatic';
 }
 
 export interface PassageState {

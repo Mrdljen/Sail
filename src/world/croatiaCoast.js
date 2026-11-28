@@ -2,6 +2,9 @@ import { CROATIA_COAST_DATA } from './croatiaCoastData.js';
 
 /** User-defined game rule: water shallower than this is not sailable. */
 export const CROATIA_MIN_SAILABLE_DEPTH_M = 2;
+/** Nominal water depth used where no Croatian bathymetry is bundled. */
+export const CROATIA_NOMINAL_WATER_DEPTH_M = 20;
+export const CROATIA_COLLISION_SAMPLE_SPACING_NM = 0.1;
 
 const WEB_MERCATOR_EARTH_RADIUS_M = 6378137;
 const WEB_MERCATOR_MAX_LATITUDE_DEG = 85.0511287798066;
@@ -102,6 +105,50 @@ export function croatiaRoutePositionToGeo(frame, xNm, zNm) {
 export function croatiaPassageIsOnLand(frame, xNm, zNm) {
   const point = croatiaRoutePositionToGeo(frame, xNm, zNm);
   return croatiaContainsLand(point.lon, point.lat);
+}
+
+export function croatiaDepthAtPassage(frame, xNm, zNm) {
+  return croatiaPassageIsOnLand(frame, xNm, zNm) ? 0 : CROATIA_NOMINAL_WATER_DEPTH_M;
+}
+
+/** Keep the last safe passage point when a movement step intersects simplified land. */
+export function resolveCroatiaPassageStep(frame, previous, candidate) {
+  const distanceNm = Math.hypot(candidate.xNm - previous.xNm, candidate.zNm - previous.zNm);
+  const sampleCount = Math.max(1, Math.ceil(distanceNm / CROATIA_COLLISION_SAMPLE_SPACING_NM));
+  let hitLand = false;
+  for (let sample = 1; sample <= sampleCount; sample += 1) {
+    const progress = sample / sampleCount;
+    const sampleX = previous.xNm + (candidate.xNm - previous.xNm) * progress;
+    const sampleZ = previous.zNm + (candidate.zNm - previous.zNm) * progress;
+    if (croatiaPassageIsOnLand(frame, sampleX, sampleZ)) {
+      hitLand = true;
+      break;
+    }
+  }
+  return {
+    xNm: hitLand ? previous.xNm : candidate.xNm,
+    zNm: hitLand ? previous.zNm : candidate.zNm,
+    depthM: hitLand ? 0 : CROATIA_NOMINAL_WATER_DEPTH_M,
+    hitLand,
+  };
+}
+
+/** Croat hubs are grouped into a short regional network rather than the global trade route. */
+export function isCroatiaHubId(hubId) {
+  return hubId.startsWith('croatia-');
+}
+
+export function isCroatiaPassage(fromHubId, toHubId) {
+  return fromHubId !== toHubId && isCroatiaHubId(fromHubId) && isCroatiaHubId(toHubId);
+}
+
+/** Initial heading along the route's projected local east/north axis. */
+export function croatiaRouteBearingDeg(fromHub, toHub) {
+  const start = projectLonLat(fromHub);
+  const end = projectLonLat(toHub);
+  const east = end.east - start.east;
+  const north = end.north - start.north;
+  return (Math.atan2(east, north) * 180 / Math.PI + 360) % 360;
 }
 
 /**

@@ -8,6 +8,7 @@ import {
   MONTH_NAMES,
 } from '../sim/worldHubs';
 import { BOAT_ORDER, BOAT_SPECS } from '../sim/boats';
+import { CROATIA_COAST_DATA, getCroatiaCoastBounds } from '../world/croatiaCoast.js';
 import type { BoatId, WorldHub } from '../types/sailing';
 
 interface WorldChartModalProps {
@@ -29,6 +30,33 @@ function projectLonLat(lon: number, lat: number): { x: number; y: number } {
   const y = ((90 - lat) / 180) * 420;
   return { x, y };
 }
+
+const CROATIA_DETAIL_BOUNDS = getCroatiaCoastBounds();
+const CROATIA_DETAIL_SCALE = Math.min(
+  216 / (CROATIA_DETAIL_BOUNDS.maxLon - CROATIA_DETAIL_BOUNDS.minLon),
+  126 / (CROATIA_DETAIL_BOUNDS.maxLat - CROATIA_DETAIL_BOUNDS.minLat),
+);
+const CROATIA_DETAIL_OFFSET_X = (240 - (CROATIA_DETAIL_BOUNDS.maxLon - CROATIA_DETAIL_BOUNDS.minLon) * CROATIA_DETAIL_SCALE) / 2;
+const CROATIA_DETAIL_OFFSET_Y = (150 - (CROATIA_DETAIL_BOUNDS.maxLat - CROATIA_DETAIL_BOUNDS.minLat) * CROATIA_DETAIL_SCALE) / 2;
+
+function projectCroatiaDetail(lon: number, lat: number): { x: number; y: number } {
+  return {
+    x: CROATIA_DETAIL_OFFSET_X + (lon - CROATIA_DETAIL_BOUNDS.minLon) * CROATIA_DETAIL_SCALE,
+    y: 150 - CROATIA_DETAIL_OFFSET_Y - (lat - CROATIA_DETAIL_BOUNDS.minLat) * CROATIA_DETAIL_SCALE,
+  };
+}
+
+function croatiaDetailPath(): string {
+  return CROATIA_COAST_DATA.features.flatMap((feature) =>
+    feature.geometry.coordinates.map((polygon) => polygon.map((ring) => {
+      const points = ring.map(([lon, lat]) => projectCroatiaDetail(lon, lat));
+      return `M${points.map((point) => `${point.x.toFixed(2)},${point.y.toFixed(2)}`).join('L')}Z`;
+    }).join('')),
+  ).join('');
+}
+
+const CROATIA_DETAIL_PATH = croatiaDetailPath();
+const routeNetworkFor = (hub: WorldHub) => hub.routeNetwork ?? 'trade-wind';
 
 export function WorldChartModal({
   open,
@@ -68,11 +96,15 @@ export function WorldChartModal({
 
   if (!open) return null;
 
+  const croatiaHubs = HANDCRAFTED_HUBS.filter((hub) => hub.routeNetwork === 'croatia-adriatic');
+
   const legDistanceNm =
     fromHub.id === 'lanzarote' && selectedStop.id === 'la-gomera'
       ? 100
       : Math.max(25, computeGreatCircleNm(fromHub.lat, fromHub.lon, selectedStop.lat, selectedStop.lon));
   const cycloneAlert = isCycloneRiskMonth(selectedStop, monthOfYear);
+  const routeCompatible =
+    routeNetworkFor(fromHub) === routeNetworkFor(selectedStop) && fromHub.id !== selectedStop.id;
 
   return (
     <div
@@ -91,7 +123,7 @@ export function WorldChartModal({
                 Global Trade-Wind Route & Great Capes
               </h2>
               <p className="text-xs text-slate-400">
-                28 handcrafted Coconut Milk Run hubs · Deterministic procedural atolls · Seasonal cyclone windows
+                {HANDCRAFTED_HUBS.length - croatiaHubs.length} handcrafted Coconut Milk Run hubs · Croatian Adriatic coast · Seasonal cyclone windows
               </p>
             </div>
           </div>
@@ -189,7 +221,7 @@ export function WorldChartModal({
                 {/* Trade-Wind Route Segments */}
                 {HANDCRAFTED_HUBS.slice(0, -1).map((hub, idx) => {
                   const next = HANDCRAFTED_HUBS[idx + 1];
-                  if (Math.abs(hub.lon - next.lon) > 180) return null;
+                  if (routeNetworkFor(hub) !== routeNetworkFor(next) || Math.abs(hub.lon - next.lon) > 180) return null;
                   const p1 = projectLonLat(hub.lon, hub.lat);
                   const p2 = projectLonLat(next.lon, next.lat);
                   return (
@@ -210,7 +242,10 @@ export function WorldChartModal({
                 {(() => {
                   const p1 = projectLonLat(fromHub.lon, fromHub.lat);
                   const p2 = projectLonLat(selectedStop.lon, selectedStop.lat);
-                  if (Math.abs(fromHub.lon - selectedStop.lon) > 180) return null;
+                  if (
+                    routeNetworkFor(fromHub) !== routeNetworkFor(selectedStop) ||
+                    Math.abs(fromHub.lon - selectedStop.lon) > 180
+                  ) return null;
                   return (
                     <line
                       x1={p1.x}
@@ -295,6 +330,51 @@ export function WorldChartModal({
                   );
                 })}
               </svg>
+              <div className="absolute bottom-3 right-3 w-56 overflow-hidden rounded-lg border border-sky-800/80 bg-slate-950/95 shadow-xl">
+                <div className="px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-sky-200">
+                  Croatian Adriatic · simplified coast
+                </div>
+                <svg viewBox="0 0 240 150" className="block w-full" role="img" aria-label="Croatian coast and islands">
+                  <rect width="240" height="150" fill="#0b3448" />
+                  <path d={CROATIA_DETAIL_PATH} fill="#65765b" fillRule="evenodd" />
+                  {croatiaHubs.map((hub) => {
+                    const { x, y } = projectCroatiaDetail(hub.lon, hub.lat);
+                    const selected = hub.id === selectedStop.id;
+                    return (
+                      <g
+                        key={hub.id}
+                        role="button"
+                        tabIndex={0}
+                        aria-label={`Select ${hub.name}`}
+                        onClick={() => { setToHub(hub); setSelectedStop(hub); }}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            setToHub(hub);
+                            setSelectedStop(hub);
+                          }
+                        }}
+                        className="cursor-pointer"
+                      >
+                        <circle cx={x} cy={y} r={selected ? 3.5 : 2.6} fill={selected ? '#fbbf24' : '#e2e8f0'} stroke="#0f172a" strokeWidth="1" />
+                      </g>
+                    );
+                  })}
+                </svg>
+                <div className="grid grid-cols-3 border-t border-slate-800">
+                  {croatiaHubs.map((hub) => (
+                    <button
+                      key={hub.id}
+                      type="button"
+                      onClick={() => { setToHub(hub); setSelectedStop(hub); }}
+                      className={`min-h-9 px-1 text-[9px] leading-tight cursor-pointer ${
+                        hub.id === selectedStop.id ? 'bg-amber-500/15 text-amber-200' : 'text-slate-300 hover:bg-slate-800'
+                      }`}
+                    >
+                      {hub.name.split(' ')[0]}
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
 
             {/* Hub Quick-Picker Strip */}
@@ -389,9 +469,15 @@ export function WorldChartModal({
                     onLaunchPassage(fromHub, selectedStop);
                     onClose();
                   }}
-                  className="flex-1 min-h-[44px] px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold text-xs cursor-pointer"
+                  disabled={!routeCompatible}
+                  title={routeCompatible ? undefined : 'Choose a destination in the same sailing region.'}
+                  className={`flex-1 min-h-[44px] px-4 py-2 rounded-lg font-semibold text-xs ${
+                    routeCompatible
+                      ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 cursor-pointer'
+                      : 'bg-slate-700 text-slate-400 cursor-not-allowed'
+                  }`}
                 >
-                  Set Sail ({legDistanceNm} NM)
+                  {routeCompatible ? `Set Sail (${legDistanceNm} NM)` : 'Choose a port in this region'}
                 </button>
               </div>
             </div>

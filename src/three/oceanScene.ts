@@ -22,6 +22,12 @@ import { HANDCRAFTED_HUBS } from '../sim/worldHubs';
 import { archetypeForHub, createIslandGroup, portRegionForHub } from '../world/IslandWorld';
 import { islandApproachOffsetM, PASSAGE_NM_TO_WORLD_M } from '../world/navigationTerrain';
 import { islandRadiusForArchetype } from '../world/generators';
+import {
+  CROATIA_COAST_DATA,
+  createCroatiaRouteFrame,
+  croatiaPointToScene,
+  isCroatiaPassage,
+} from '../world/croatiaCoast.js';
 import type {
   BoatId,
   CameraViewMode,
@@ -184,6 +190,58 @@ function createDistantVessel(hullColor: number): { group: THREE.Group; dispose: 
   };
 }
 
+function createCroatiaLand(fromHub: { lon: number; lat: number }, toHub: { lon: number; lat: number }, totalDistanceNm: number) {
+  const group = new THREE.Group();
+  const frame = createCroatiaRouteFrame(fromHub, toHub, totalDistanceNm);
+  const material = new THREE.MeshStandardMaterial({
+    color: 0x68785d,
+    roughness: 0.98,
+    side: THREE.DoubleSide,
+  });
+
+  for (const feature of CROATIA_COAST_DATA.features) {
+    for (const polygon of feature.geometry.coordinates) {
+      if (!polygon.length) continue;
+      const shape = new THREE.Shape();
+      const appendRing = (path: THREE.Path | THREE.Shape, ring: number[][]) => {
+        const points = ring.length > 1 ? ring.slice(0, -1) : ring;
+        points.forEach(([lon, lat], index) => {
+          const projected = croatiaPointToScene({ lon, lat }, frame, 0, 0, PASSAGE_NM_TO_WORLD_M);
+          const mapX = projected.x;
+          const mapY = -projected.z;
+          if (index === 0) path.moveTo(mapX, mapY);
+          else path.lineTo(mapX, mapY);
+        });
+        path.closePath();
+      };
+
+      appendRing(shape, polygon[0]);
+      for (const holeRing of polygon.slice(1)) {
+        const hole = new THREE.Path();
+        appendRing(hole, holeRing);
+        shape.holes.push(hole);
+      }
+
+      const geometry = new THREE.ShapeGeometry(shape);
+      geometry.rotateX(-Math.PI / 2);
+      geometry.translate(0, 0.35, 0);
+      const land = new THREE.Mesh(geometry, material);
+      land.receiveShadow = true;
+      group.add(land);
+    }
+  }
+
+  return {
+    group,
+    dispose: () => {
+      group.children.forEach((child) => {
+        if (child instanceof THREE.Mesh) child.geometry.dispose();
+      });
+      material.dispose();
+    },
+  };
+}
+
 export class SailingSceneController {
   private container: HTMLElement;
   private callbacks: OceanSceneCallbacks;
@@ -199,6 +257,8 @@ export class SailingSceneController {
   private starfield: ReturnType<typeof createStarfield>;
   private departureIsland: ReturnType<typeof createIslandGroup>;
   private destinationIsland: ReturnType<typeof createIslandGroup>;
+  private croatiaCoast: ReturnType<typeof createCroatiaLand> | null = null;
+  private croatiaCoastRouteKey = '';
   private departureHubId: string;
   private destinationHubId: string;
   private harborVessels: Array<ReturnType<typeof createDistantVessel>>;
@@ -652,6 +712,7 @@ export class SailingSceneController {
       true,
     );
     scene.add(this.departureIsland.group, this.destinationIsland.group);
+    this.updateCroatiaCoast(initialState, departureHub, destinationHub);
 
     this.harborVessels = [createDistantVessel(0xf8fafc), createDistantVessel(0x1e3a5f)];
     this.harborVessels.forEach((v) => scene.add(v.group));
@@ -925,6 +986,7 @@ export class SailingSceneController {
       this.destinationIsland = nextIsland;
       this.destinationHubId = destinationHub.id;
     }
+    this.updateCroatiaCoast(state, departureHub, destinationHub);
 
     const tod = state.weather.timeOfDayHours;
     // Solar elevation angle: peaks at 12:30 (~62°), drops below horizon at night
@@ -1013,12 +1075,22 @@ export class SailingSceneController {
     const depX = -state.passage.xNm * nmToM - depOffset;
     const depZ = -state.passage.zNm * nmToM;
     this.departureIsland.group.position.set(depX, 0, depZ);
-    this.departureIsland.updateLod(this.camera.position);
+    if (!this.croatiaCoast) this.departureIsland.updateLod(this.camera.position);
+    else this.departureIsland.group.visible = false;
 
     const destX = (state.passage.totalDistanceNm - state.passage.xNm) * nmToM + destOffset;
     const destZ = -state.passage.zNm * nmToM;
     this.destinationIsland.group.position.set(destX, 0, destZ);
-    this.destinationIsland.updateLod(this.camera.position);
+    if (!this.croatiaCoast) this.destinationIsland.updateLod(this.camera.position);
+    else this.destinationIsland.group.visible = false;
+
+    if (this.croatiaCoast) {
+      this.croatiaCoast.group.position.set(
+        -state.passage.xNm * nmToM,
+        0,
+        state.passage.zNm * nmToM,
+      );
+    }
 
     // Two distant harbor vessels gently cruising/tacking near departure & destination coves
     const v0 = this.harborVessels[0].group;
@@ -1038,6 +1110,43 @@ export class SailingSceneController {
     );
     v1.rotation.y = -0.7;
     v1.visible = this.destinationIsland.group.visible;
+  }
+
+  private updateCroatiaCoast(
+    state: SimulationState,
+    departureHub: (typeof HANDCRAFTED_HUBS)[number],
+    destinationHub: (typeof HANDCRAFTED_HUBS)[number],
+  ): void {
+    const enabled = isCroatiaPassage(departureHub.id, destinationHub.id);
+    const routeKey = enabled
+      ? `${departureHub.id}:${destinationHub.id}:${state.passage.totalDistanceNm}`
+      : '';
+    if (routeKey !== this.croatiaCoastRouteKey) {
+      if (this.croatiaCoast) {
+        this.scene.remove(this.croatiaCoast.group);
+        this.croatiaCoast.dispose();
+        this.croatiaCoast = null;
+      }
+      this.croatiaCoastRouteKey = routeKey;
+      if (enabled) {
+        this.croatiaCoast = createCroatiaLand(
+          departureHub,
+          destinationHub,
+          state.passage.totalDistanceNm,
+        );
+        this.scene.add(this.croatiaCoast.group);
+      }
+    }
+    const hideProceduralIslands = this.croatiaCoast !== null;
+    this.departureIsland.group.visible = !hideProceduralIslands;
+    this.destinationIsland.group.visible = !hideProceduralIslands;
+    if (this.croatiaCoast) {
+      this.croatiaCoast.group.position.set(
+        -state.passage.xNm * PASSAGE_NM_TO_WORLD_M,
+        0,
+        state.passage.zNm * PASSAGE_NM_TO_WORLD_M,
+      );
+    }
   }
 
   private updateParticles(state: SimulationState, dt: number): void {
@@ -1446,6 +1555,10 @@ export class SailingSceneController {
     this.ultraOcean?.dispose();
     this.boat.dispose();
     this.starfield.dispose();
+    if (this.croatiaCoast) {
+      this.scene.remove(this.croatiaCoast.group);
+      this.croatiaCoast.dispose();
+    }
     this.departureIsland.dispose();
     this.destinationIsland.dispose();
     this.harborVessels.forEach((v) => v.dispose());

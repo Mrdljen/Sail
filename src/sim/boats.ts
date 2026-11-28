@@ -500,8 +500,12 @@ export function generatePortContracts(
 ): CharterContract[] {
   const origin = HANDCRAFTED_HUBS.find((h) => h.id === fromHubId) ?? HANDCRAFTED_HUBS[0];
   const dest = HANDCRAFTED_HUBS.find((h) => h.id === toHubId) ?? HANDCRAFTED_HUBS[1];
-  const nextIdx = (dest.orderIndex + 1) % HANDCRAFTED_HUBS.length;
-  const onward: WorldHub = HANDCRAFTED_HUBS[nextIdx];
+  const network = dest.routeNetwork ?? 'trade-wind';
+  const sameNetworkHubs = HANDCRAFTED_HUBS.filter((hub) => (hub.routeNetwork ?? 'trade-wind') === network);
+  const onward =
+    sameNetworkHubs.find((hub) => hub.orderIndex === dest.orderIndex + 1 && hub.id !== origin.id) ??
+    sameNetworkHubs.find((hub) => hub.id !== origin.id && hub.id !== dest.id) ??
+    sameNetworkHubs[0];
 
   const legNm =
     origin.id === 'lanzarote' && dest.id === 'la-gomera'

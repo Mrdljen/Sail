@@ -15,6 +15,14 @@ import { computeRiggingFailureChance, evaluateWearFactors, HYDRO_TUNING, WEAR_TU
 import { computeGreatCircleNm, HANDCRAFTED_HUBS } from './worldHubs';
 import { archetypeForHub, portRegionForHub } from '../world/generators';
 import {
+  CROATIA_MIN_SAILABLE_DEPTH_M,
+  croatiaDepthAtPassage,
+  croatiaRouteBearingDeg,
+  createCroatiaRouteFrame,
+  isCroatiaPassage,
+  resolveCroatiaPassageStep,
+} from '../world/croatiaCoast.js';
+import {
   COVE_ARRIVAL_DISTANCE_NM,
   PASSAGE_NM_TO_WORLD_M,
   islandApproachOffsetM,
@@ -121,6 +129,10 @@ export function computeDepthAtPassage(
 
   const fromHub = HANDCRAFTED_HUBS.find((hub) => hub.id === fromHubId) ?? HANDCRAFTED_HUBS[0];
   const toHub = HANDCRAFTED_HUBS.find((hub) => hub.id === toHubId) ?? HANDCRAFTED_HUBS[1];
+  if (isCroatiaPassage(fromHubId, toHubId)) {
+    const routeFrame = createCroatiaRouteFrame(fromHub, toHub, totalDistanceNm);
+    return croatiaDepthAtPassage(routeFrame, xNm, zNm);
+  }
   const fromArchetype = archetypeForHub(fromHub);
   const toArchetype = archetypeForHub(toHub);
   const fromRegion = portRegionForHub(fromHub);
@@ -168,6 +180,8 @@ export function createInitialSimulationState(
   const totalDistanceNm = isDefaultVerticalSlice
     ? 100
     : Math.max(45, computeGreatCircleNm(origin.lat, origin.lon, dest.lat, dest.lon));
+  const isCroatiaRoute = isCroatiaPassage(origin.id, dest.id);
+  const initialHeadingDeg = isCroatiaRoute ? croatiaRouteBearingDeg(origin, dest) : 90;
 
   const initSpeedKts = Math.min(spec.hullSpeedKts * 0.72, 4.8 + (spec.lengthFt - 19) * 0.08);
   const simRealism = 0.65;
@@ -180,8 +194,8 @@ export function createInitialSimulationState(
     vesselCfg: { ...spec.defaultCfg },
     simRealism,
     realismPreset: profile.preset,
-    headingDeg: 90,
-    cogDeg: 90,
+    headingDeg: initialHeadingDeg,
+    cogDeg: initialHeadingDeg,
     rudderAngleDeg: 0,
     surgeVelMs: initSpeedKts * KTS_TO_MS,
     swayVelMs: 0.08,
@@ -212,7 +226,7 @@ export function createInitialSimulationState(
     isLuffing: false,
     isOverpowered: false,
     autopilotMode: 'manual',
-    autopilotTargetDeg: 90,
+    autopilotTargetDeg: initialHeadingDeg,
     timeCompression: 1,
     electrical: {
       navLights: false,
@@ -287,9 +301,9 @@ export function createInitialSimulationState(
       toName: dest.name,
       totalDistanceNm,
       distanceSailedNm: 0,
-      xNm: 2.2,
+      xNm: isCroatiaRoute ? 0.25 : 2.2,
       zNm: 0,
-      depthM: computeDepthAtPassage(2.2, 0, totalDistanceNm, origin.id, dest.id),
+      depthM: computeDepthAtPassage(isCroatiaRoute ? 0.25 : 2.2, 0, totalDistanceNm, origin.id, dest.id),
       elapsedHours: 0,
       peakSpeedKts: initSpeedKts,
       maxGustKts: 17,
@@ -713,7 +727,7 @@ function stepFixedSubstep(
   const fNetSurgeN = forces.fDriveN + forces.waveSurfPushN - rSurgeN;
   // Scale physical time integration slightly for 1x responsiveness while preserving vessel mass inertia hierarchy
   const physAccelTimeScale = prev.timeCompression === 1 ? 1.85 : 2.6;
-  const nextSurgeVelMs = clamp(
+  let nextSurgeVelMs = clamp(
     u + (fNetSurgeN / effMassKg) * dt * physAccelTimeScale,
     -0.65,
     forces.hullSpeedMs * 1.24,
@@ -726,7 +740,7 @@ function stepFixedSubstep(
     0.5 * WATER_RHO * uFlowMs * cfg.keelAreaM2 * 4.6 * v +
     0.5 * WATER_RHO * cfg.wingSurDragM2 * 0.65 * v * Math.abs(v);
   const fNetSwayN = forces.fLatSignedN - keelLatResistanceN;
-  const nextSwayVelMs = clamp(
+  let nextSwayVelMs = clamp(
     v + (fNetSwayN / swayMassKg) * dt * physAccelTimeScale,
     -1.6,
     1.6,
@@ -780,7 +794,7 @@ function stepFixedSubstep(
     profile.forgivingHeelCapDeg,
   );
 
-  const boatSpeedKts = Math.max(0, nextSurgeVelMs * MS_TO_KTS);
+  let boatSpeedKts = Math.max(0, nextSurgeVelMs * MS_TO_KTS);
   const leewayRad = Math.atan2(nextSwayVelMs, Math.max(0.35, Math.abs(nextSurgeVelMs)));
   const leewayDeg =
     Math.abs(awaDeg) < 125 && boatSpeedKts > 0.25
@@ -808,19 +822,46 @@ function stepFixedSubstep(
     Math.cos(currentRad) * weather.oceanCurrentKts -
     Math.cos(tideRad) * prev.anchor.tidalCurrentKts * coastalTideFactor;
 
-  const sogKts = Math.hypot(velX, velZ);
-  const cogDeg = sogKts > 0.15 ? normalizeAngle360(radToDeg(Math.atan2(velX, -velZ))) : headingDeg;
+  let sogKts = Math.hypot(velX, velZ);
+  let cogDeg = sogKts > 0.15 ? normalizeAngle360(radToDeg(Math.atan2(velX, -velZ))) : headingDeg;
 
-  const distNmStep = boatSpeedKts * simHoursDelta;
-  const nextX = prev.passage.xNm + velX * simHoursDelta;
-  const nextZ = prev.passage.zNm + velZ * simHoursDelta;
-  const nextDepthM = computeDepthAtPassage(
-    nextX,
-    nextZ,
-    prev.passage.totalDistanceNm,
-    prev.passage.fromHubId,
-    prev.passage.toHubId,
-  );
+  let distNmStep = boatSpeedKts * simHoursDelta;
+  const groundingImpactSpeedKts = boatSpeedKts;
+  let nextX = prev.passage.xNm + velX * simHoursDelta;
+  let nextZ = prev.passage.zNm + velZ * simHoursDelta;
+  let nextDepthM: number;
+  let croatiaLandCollision = false;
+  if (isCroatiaPassage(prev.passage.fromHubId, prev.passage.toHubId)) {
+    const fromHub = HANDCRAFTED_HUBS.find((hub) => hub.id === prev.passage.fromHubId) ?? HANDCRAFTED_HUBS[0];
+    const toHub = HANDCRAFTED_HUBS.find((hub) => hub.id === prev.passage.toHubId) ?? HANDCRAFTED_HUBS[1];
+    const routeFrame = createCroatiaRouteFrame(fromHub, toHub, prev.passage.totalDistanceNm);
+    const routeStep = resolveCroatiaPassageStep(
+      routeFrame,
+      { xNm: prev.passage.xNm, zNm: prev.passage.zNm },
+      { xNm: nextX, zNm: nextZ },
+    );
+    nextX = routeStep.xNm;
+    nextZ = routeStep.zNm;
+    croatiaLandCollision =
+      routeStep.hitLand && routeStep.depthM < CROATIA_MIN_SAILABLE_DEPTH_M;
+    nextDepthM = routeStep.depthM;
+    if (croatiaLandCollision) {
+      nextSurgeVelMs = 0;
+      nextSwayVelMs = 0;
+      boatSpeedKts = 0;
+      sogKts = 0;
+      cogDeg = headingDeg;
+      distNmStep = 0;
+    }
+  } else {
+    nextDepthM = computeDepthAtPassage(
+      nextX,
+      nextZ,
+      prev.passage.totalDistanceNm,
+      prev.passage.fromHubId,
+      prev.passage.toHubId,
+    );
+  }
 
   // 6. Wear & Maintenance Degradation + Equipment Chaining
   const wearScale = profile.wearRateScale;
@@ -854,10 +895,13 @@ function stepFixedSubstep(
   const channelHazardWarning = nextDepthM < 4.5 && !prev.anchor.deployed;
   let groundedThisTick = false;
 
-  if (nextDepthM < 2.2 && !prev.anchor.deployed && boatSpeedKts > 1.2) {
-    groundedThisTick = true;
-    nextWear.hull = Math.max(5, nextWear.hull - 6.5 * wearScale);
-    groundingCount += 1;
+  if (nextDepthM < 2.2 && !prev.anchor.deployed && groundingImpactSpeedKts > 1.2) {
+    const firstCoastContact = !croatiaLandCollision || prev.passage.depthM >= 2.2;
+    if (firstCoastContact) {
+      groundedThisTick = true;
+      nextWear.hull = Math.max(5, nextWear.hull - 6.5 * wearScale);
+      groundingCount += 1;
+    }
   }
 
   // Daily upkeep deduction

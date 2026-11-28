@@ -395,6 +395,51 @@ export const HANDCRAFTED_HUBS: WorldHub[] = [
     orderIndex: 27,
     description: 'The Everest of sailing: ferocious westerlies, short steep seas, and albatrosses.',
   },
+  {
+    id: 'croatia-zadar',
+    name: 'Zadar Outer Anchorage',
+    region: 'Croatian Adriatic',
+    lat: 44.12,
+    lon: 15.23,
+    prevailingWindDirDeg: 45,
+    prevailingWindKts: 11,
+    cycloneMonths: [],
+    harborType: 'Trade Hub',
+    chandleryTier: 3,
+    orderIndex: 0,
+    routeNetwork: 'croatia-adriatic',
+    description: 'An offshore starting point among the northern Dalmatian islands.',
+  },
+  {
+    id: 'croatia-split',
+    name: 'Split Outer Anchorage',
+    region: 'Croatian Adriatic',
+    lat: 43.45,
+    lon: 16.45,
+    prevailingWindDirDeg: 55,
+    prevailingWindKts: 12,
+    cycloneMonths: [],
+    harborType: 'Trade Hub',
+    chandleryTier: 3,
+    orderIndex: 1,
+    routeNetwork: 'croatia-adriatic',
+    description: 'An offshore approach to Split with Brač and Šolta nearby.',
+  },
+  {
+    id: 'croatia-dubrovnik',
+    name: 'Dubrovnik Outer Anchorage',
+    region: 'Croatian Adriatic',
+    lat: 42.64,
+    lon: 18.12,
+    prevailingWindDirDeg: 65,
+    prevailingWindKts: 13,
+    cycloneMonths: [],
+    harborType: 'Trade Hub',
+    chandleryTier: 3,
+    orderIndex: 2,
+    routeNetwork: 'croatia-adriatic',
+    description: 'A southern Dalmatian landfall with the Elaphiti Islands to the northwest.',
+  },
 ];
 
 // Deterministic PRNG for procedural intermediate atolls and coves
@@ -451,6 +496,8 @@ export function generateIntermediateAnchorages(
   to: WorldHub,
   count = 4,
 ): WorldHub[] {
+  if (from.routeNetwork !== to.routeNetwork && (from.routeNetwork || to.routeNetwork)) return [];
+  if (from.routeNetwork === 'croatia-adriatic') return [];
   const distNm = computeGreatCircleNm(from.lat, from.lon, to.lat, to.lon);
   if (distNm < 45) return [];
 

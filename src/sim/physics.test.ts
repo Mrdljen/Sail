@@ -144,6 +144,19 @@ test('Fixed-timestep determinism & v1 save migration restores boat model mapping
   assert.equal(migratedModelOverride.exteriorModelId, 'sergei-lite');
 });
 
+test('Croatian ports stay in their regional network for expeditions and coastal depths', () => {
+  const contracts = generatePortContracts('croatia-zadar', 'croatia-dubrovnik', 'elan-19');
+  const croatianHubIds = new Set(['croatia-zadar', 'croatia-split', 'croatia-dubrovnik']);
+  assert.ok(contracts.every((contract) => croatianHubIds.has(contract.fromHubId)));
+  assert.ok(contracts.every((contract) => croatianHubIds.has(contract.toHubId)));
+  assert.equal(contracts[2].toHubId, 'croatia-split');
+
+  const seaRouteDepth = computeDepthAtPassage(0.25, 0, 154, 'croatia-zadar', 'croatia-dubrovnik');
+  const onLandDepth = computeDepthAtPassage(1, 0, 154, 'croatia-zadar', 'croatia-dubrovnik');
+  assert.equal(seaRouteDepth, 20);
+  assert.equal(onLandDepth, 0);
+});
+
 test('Electrical solar charges in daytime and fridge consumes power', () => {
   let state = createInitialSimulationState('rustler-36');
   state.weather.timeOfDayHours = 12.5;
