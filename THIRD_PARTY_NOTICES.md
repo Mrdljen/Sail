@@ -51,3 +51,16 @@ This project ports specific algorithms and procedural ocean patterns from extern
    - Source: https://sketchfab.com/3d-models/sailboat-76d0b1e24be14d2f9a524bfce3001aeb
    - License recorded in the supplied original model metadata: **CC BY 4.0**.
    - Existing assets: `public/models/sailboat.glb` and `public/models/sailboat (1).glb`. Runtime orientation and scale are applied by the renderer; the asset files are unchanged.
+
+## Procedural World Generation (2026-11-28)
+
+1. **Tides of Fortune (`silvestroz/tides-of-fortune`)**
+   - Source: https://github.com/silvestroz/tides-of-fortune
+   - License: **PolyForm Noncommercial License 1.0.0**. Any derivative use remains limited to noncommercial purposes under that license.
+   - Approach references: `WorldShape.islandHeight` / `_spineDist` in `src/world/terrain/heightfield.js` for seeded heightfields and coast falloff; `findCoast` / `sitePort` in `src/world/terrain/siting.js` for shoreline port placement; transferable worker results in `src/world/terrain/bakeWorker.js`; near/far instanced vegetation in `src/world/terrain/vegetation.js`; and `GeoBuilder.box`, `gable`, and `buildChunks` in `src/world/towns/builder.js` for modular harbor blocks.
+   - `src/world/generationAlgorithms.ts` and `src/world/IslandWorld.ts` independently implement these ideas. No Tides source code or assets are copied.
+
+2. **Three.js `ImprovedNoise`**
+   - Source: https://github.com/mrdoob/three.js/blob/dev/examples/jsm/math/ImprovedNoise.js
+   - License: MIT, distributed with the project's existing Three.js dependency.
+   - `src/world/generators.ts` uses the bundled noise implementation through its documented import; no Three.js source code is copied into this project.

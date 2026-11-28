@@ -18,6 +18,8 @@ import {
 import { buildSailboatModel, syncBoatVisuals, type BuiltBoat, type InteractiveAction } from './boatBuilder';
 import { createProceduralTextures } from './proceduralTextures';
 import { isWebGL2UltraWaterSupported, UltraWaterOcean } from './ultraWater';
+import { HANDCRAFTED_HUBS } from '../sim/worldHubs';
+import { archetypeForHub, createIslandGroup, portRegionForHub } from '../world/IslandWorld';
 import type {
   BoatId,
   CameraViewMode,
@@ -180,132 +182,6 @@ function createDistantVessel(hullColor: number): { group: THREE.Group; dispose: 
   };
 }
 
-function createIslandGroup(
-  seedOffset: number,
-  isSoftwareGl: boolean,
-  hasQuay: boolean,
-): { group: THREE.Group; dispose: () => void } {
-  const group = new THREE.Group();
-  const disposables: Array<{ dispose: () => void }> = [];
-
-  const islandGeo = new THREE.ConeGeometry(95, 36, 20, 4);
-  const pos = islandGeo.attributes.position;
-  for (let i = 0; i < pos.count; i++) {
-    const x = pos.getX(i);
-    const y = pos.getY(i);
-    const z = pos.getZ(i);
-    const angle = Math.atan2(z, x);
-    const ridge = Math.sin(angle * 3 + seedOffset) * 0.22 + Math.cos(angle * 5 - seedOffset) * 0.14;
-    if (y < 14) {
-      pos.setX(i, x * (1 + ridge));
-      pos.setZ(i, z * (1 + ridge));
-    }
-  }
-  islandGeo.computeVertexNormals();
-  const islandMat = new THREE.MeshStandardMaterial({
-    color: 0x3b5e42,
-    roughness: 0.88,
-    metalness: 0.02,
-    flatShading: true,
-  });
-  disposables.push(islandGeo, islandMat);
-
-  const islandMesh = new THREE.Mesh(islandGeo, islandMat);
-  islandMesh.position.set(0, 13, 0);
-  islandMesh.receiveShadow = !isSoftwareGl;
-  group.add(islandMesh);
-
-  // Sandy beach ring
-  const beachGeo = new THREE.CylinderGeometry(102, 114, 3.2, 24);
-  const beachMat = new THREE.MeshStandardMaterial({
-    color: 0xdcc79c,
-    roughness: 0.92,
-  });
-  disposables.push(beachGeo, beachMat);
-  const beach = new THREE.Mesh(beachGeo, beachMat);
-  beach.position.set(0, -0.4, 0);
-  group.add(beach);
-
-  // Coastal Lighthouse tower + beacon
-  const towerGeo = new THREE.CylinderGeometry(1.4, 2.2, 16, 12);
-  const towerMat = new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.5 });
-  const beaconGeo = new THREE.SphereGeometry(1.1, 10, 10);
-  const beaconMat = new THREE.MeshStandardMaterial({
-    color: 0xfef08a,
-    emissive: 0xf59e0b,
-    emissiveIntensity: 2.0,
-  });
-  disposables.push(towerGeo, towerMat, beaconGeo, beaconMat);
-  const tower = new THREE.Mesh(towerGeo, towerMat);
-  tower.position.set(22, 16, 16);
-  group.add(tower);
-  const beacon = new THREE.Mesh(beaconGeo, beaconMat);
-  beacon.position.set(22, 24.5, 16);
-  group.add(beacon);
-
-  // Harbor stone quay / pier for chandlery dock
-  if (hasQuay) {
-    const quayGeo = new THREE.BoxGeometry(28, 2.6, 8);
-    const quayMat = new THREE.MeshStandardMaterial({ color: 0x78716c, roughness: 0.85 });
-    const shedGeo = new THREE.BoxGeometry(8, 4.5, 5.5);
-    const shedMat = new THREE.MeshStandardMaterial({ color: 0x991b1b, roughness: 0.72 });
-    disposables.push(quayGeo, quayMat, shedGeo, shedMat);
-
-    const quay = new THREE.Mesh(quayGeo, quayMat);
-    quay.position.set(0, 1.0, 96);
-    group.add(quay);
-
-    const chandleryShed = new THREE.Mesh(shedGeo, shedMat);
-    chandleryShed.position.set(-4, 4.2, 95);
-    group.add(chandleryShed);
-  }
-
-  // Harbor Channel Marker Buoys (Red Port & Green Starboard lateral buoys guarding safe channel)
-  const buoyBaseGeo = new THREE.CylinderGeometry(1.1, 1.3, 1.6, 8);
-  const buoyTopGeo = new THREE.ConeGeometry(0.65, 1.8, 8);
-  const redBuoyMat = new THREE.MeshStandardMaterial({ color: 0xdc2626, roughness: 0.45, emissive: 0x7f1d1d, emissiveIntensity: 0.4 });
-  const greenBuoyMat = new THREE.MeshStandardMaterial({ color: 0x16a34a, roughness: 0.45, emissive: 0x14532d, emissiveIntensity: 0.4 });
-  disposables.push(buoyBaseGeo, buoyTopGeo, redBuoyMat, greenBuoyMat);
-
-  [-36, 36].forEach((bz, idx) => {
-    const mat = idx === 0 ? redBuoyMat : greenBuoyMat;
-    const bBase = new THREE.Mesh(buoyBaseGeo, mat);
-    bBase.position.set(seedOffset < 2 ? 128 : -128, 0.5, bz);
-    const bTop = new THREE.Mesh(buoyTopGeo, mat);
-    bTop.position.set(0, 1.4, 0);
-    bBase.add(bTop);
-    group.add(bBase);
-  });
-
-  // Instanced coastal trees (24 instances)
-  const treeCount = 24;
-  const treeGeo = new THREE.ConeGeometry(2.8, 9.5, 7);
-  const treeMat = new THREE.MeshStandardMaterial({ color: 0x2d6a4f, roughness: 0.85 });
-  disposables.push(treeGeo, treeMat);
-  const trees = new THREE.InstancedMesh(treeGeo, treeMat, treeCount);
-  const color = new THREE.Color();
-  for (let i = 0; i < treeCount; i++) {
-    const ang = (i / treeCount) * Math.PI * 2 + seedOffset;
-    const rad = 36 + ((i * 17) % 32);
-    const scale = 0.85 + ((i * 7) % 5) * 0.08;
-    _v1.set(Math.cos(ang) * rad, 8 + (1 - rad / 95) * 14, Math.sin(ang) * rad);
-    _mat4.makeTranslation(_v1.x, _v1.y, _v1.z);
-    _mat4.scale(_v2.set(scale, scale, scale));
-    trees.setMatrixAt(i, _mat4);
-    color.setHSL(0.38 + ((i % 4) - 1.5) * 0.02, 0.45, 0.28 + (i % 3) * 0.04);
-    trees.setColorAt(i, color);
-  }
-  trees.instanceMatrix.needsUpdate = true;
-  if (trees.instanceColor) trees.instanceColor.needsUpdate = true;
-  trees.computeBoundingSphere();
-  group.add(trees);
-
-  return {
-    group,
-    dispose: () => disposables.forEach((d) => d.dispose()),
-  };
-}
-
 export class SailingSceneController {
   private container: HTMLElement;
   private callbacks: OceanSceneCallbacks;
@@ -321,6 +197,8 @@ export class SailingSceneController {
   private starfield: ReturnType<typeof createStarfield>;
   private departureIsland: ReturnType<typeof createIslandGroup>;
   private destinationIsland: ReturnType<typeof createIslandGroup>;
+  private departureHubId: string;
+  private destinationHubId: string;
   private harborVessels: Array<ReturnType<typeof createDistantVessel>>;
   private sunLight: THREE.DirectionalLight;
   private hemiLight: THREE.HemisphereLight;
@@ -754,8 +632,23 @@ export class SailingSceneController {
     this.emitOceanStats(true);
 
     // Islands & Distant Harbor Vessels
-    this.departureIsland = createIslandGroup(1.2, this.isSoftwareGl, true);
-    this.destinationIsland = createIslandGroup(4.7, this.isSoftwareGl, true);
+    const departureHub = HANDCRAFTED_HUBS.find((hub) => hub.id === initialState.passage.fromHubId) ?? HANDCRAFTED_HUBS[0];
+    const destinationHub = HANDCRAFTED_HUBS.find((hub) => hub.id === initialState.passage.toHubId) ?? HANDCRAFTED_HUBS[1];
+    this.departureHubId = departureHub.id;
+    this.destinationHubId = destinationHub.id;
+    this.departureIsland = createIslandGroup(
+      departureHub.id,
+      portRegionForHub(departureHub),
+      archetypeForHub(departureHub),
+      this.isSoftwareGl,
+    );
+    this.destinationIsland = createIslandGroup(
+      destinationHub.id,
+      portRegionForHub(destinationHub),
+      archetypeForHub(destinationHub),
+      this.isSoftwareGl,
+      true,
+    );
     scene.add(this.departureIsland.group, this.destinationIsland.group);
 
     this.harborVessels = [createDistantVessel(0xf8fafc), createDistantVessel(0x1e3a5f)];
@@ -1001,6 +894,36 @@ export class SailingSceneController {
   }
 
   private updateEnvironment(state: SimulationState): void {
+    const departureHub = HANDCRAFTED_HUBS.find((hub) => hub.id === state.passage.fromHubId) ?? HANDCRAFTED_HUBS[0];
+    if (departureHub.id !== this.departureHubId) {
+      const nextIsland = createIslandGroup(
+        departureHub.id,
+        portRegionForHub(departureHub),
+        archetypeForHub(departureHub),
+        this.isSoftwareGl,
+      );
+      this.scene.add(nextIsland.group);
+      this.scene.remove(this.departureIsland.group);
+      this.departureIsland.dispose();
+      this.departureIsland = nextIsland;
+      this.departureHubId = departureHub.id;
+    }
+    const destinationHub = HANDCRAFTED_HUBS.find((hub) => hub.id === state.passage.toHubId) ?? HANDCRAFTED_HUBS[1];
+    if (destinationHub.id !== this.destinationHubId) {
+      const nextIsland = createIslandGroup(
+        destinationHub.id,
+        portRegionForHub(destinationHub),
+        archetypeForHub(destinationHub),
+        this.isSoftwareGl,
+        true,
+      );
+      this.scene.add(nextIsland.group);
+      this.scene.remove(this.destinationIsland.group);
+      this.destinationIsland.dispose();
+      this.destinationIsland = nextIsland;
+      this.destinationHubId = destinationHub.id;
+    }
+
     const tod = state.weather.timeOfDayHours;
     // Solar elevation angle: peaks at 12:30 (~62°), drops below horizon at night
     const sunArc = Math.sin(((tod - 5.5) / 13) * Math.PI);
@@ -1076,12 +999,12 @@ export class SailingSceneController {
     const depX = (0 - state.passage.xNm) * nmToM - 135;
     const depZ = (0 - state.passage.zNm) * nmToM - 55;
     this.departureIsland.group.position.set(depX, 0, depZ);
-    this.departureIsland.group.visible = Math.hypot(depX, depZ) < 1600;
+    this.departureIsland.updateLod(this.camera.position);
 
     const destX = (state.passage.totalDistanceNm - state.passage.xNm) * nmToM + 125;
     const destZ = (0 - state.passage.zNm) * nmToM - 30;
     this.destinationIsland.group.position.set(destX, 0, destZ);
-    this.destinationIsland.group.visible = Math.hypot(destX, destZ) < 1600;
+    this.destinationIsland.updateLod(this.camera.position);
 
     // Two distant harbor vessels gently cruising/tacking near departure & destination coves
     const v0 = this.harborVessels[0].group;
