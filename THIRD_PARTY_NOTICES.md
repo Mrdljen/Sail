@@ -64,3 +64,8 @@ This project ports specific algorithms and procedural ocean patterns from extern
    - Source: https://github.com/mrdoob/three.js/blob/dev/examples/jsm/math/ImprovedNoise.js
    - License: MIT, distributed with the project's existing Three.js dependency.
    - `src/world/generators.ts` uses the bundled noise implementation through its documented import; no Three.js source code is copied into this project.
+
+3. **Natural Earth Croatia regions geometry**
+   - Source: https://maps.pispace.eu/data/croatia/ (Croatia 21 county polygons from Natural Earth 1:10m); upstream terms: https://www.naturalearthdata.com/about/terms-of-use/
+   - License: **Public domain** under Natural Earth's terms of use.
+   - `src/world/croatiaCoastData.js` contains the geometry only. The polygons are generalized regional land outlines, not surveyed shoreline or bathymetry data; no source code is copied.
