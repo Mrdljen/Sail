@@ -1,4 +1,4 @@
-import { BOAT_SPECS, CHANDLERY_ITEMS, countLockerSlotsUsed } from './boats';
+import { BOAT_SPECS, CHANDLERY_ITEMS, EXTERIOR_MODELS, countLockerSlotsUsed } from './boats';
 import {
   classifyPointOfSail,
   getOptimalSheetPct,
@@ -17,6 +17,7 @@ import type {
   BoatId,
   CharterContract,
   DistressRecoveryState,
+  ExteriorModelId,
   ReefLevel,
   SimulationState,
   SystemKey,
@@ -26,7 +27,7 @@ import type {
 
 export { classifyPointOfSail, getOptimalSheetPct, getReefAreaFactor, getRealismProfile };
 
-export const CURRENT_SAVE_VERSION = 2;
+export const CURRENT_SAVE_VERSION = 3;
 export const FIXED_PHYSICS_DT = 1 / 60; // 60 Hz deterministic fixed physics step
 
 export function normalizeAngle360(deg: number): number {
@@ -129,6 +130,7 @@ export function createInitialSimulationState(
   return {
     saveVersion: CURRENT_SAVE_VERSION,
     boatId: spec.id,
+    exteriorModelId: spec.exteriorModelId,
     vesselCfg: { ...spec.defaultCfg },
     simRealism,
     realismPreset: profile.preset,
@@ -279,6 +281,10 @@ export function migrateSaveState(rawParsed: unknown): SimulationState {
     ...parsed,
     saveVersion: CURRENT_SAVE_VERSION,
     boatId: validBoatId,
+    exteriorModelId:
+      parsed.exteriorModelId && parsed.exteriorModelId in EXTERIOR_MODELS
+        ? (parsed.exteriorModelId as ExteriorModelId)
+        : spec.exteriorModelId,
     simRealism,
     realismPreset: profile.preset,
     surgeVelMs:
@@ -1317,6 +1323,7 @@ export function switchOrPurchaseBoat(prev: SimulationState, targetBoat: BoatId):
   return {
     ...prev,
     boatId: targetBoat,
+    exteriorModelId: spec.exteriorModelId,
     vesselCfg: { ...spec.defaultCfg },
     staysailDeployed: spec.hasStaysail,
     inventory: {

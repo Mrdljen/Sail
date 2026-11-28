@@ -127,7 +127,7 @@ test('True 4-DOF Rigid-Body Momentum: boat carries headway inertia into irons an
   assert.ok(decelerating.boatSpeedKts < state.boatSpeedKts - 1.5, 'Head-to-wind drag decelerates momentum over 3s');
 });
 
-test('Fixed-timestep determinism & v1->v2 save state migration', () => {
+test('Fixed-timestep determinism & v1 save migration restores boat model mapping', () => {
   const legacyV1 = {
     boatId: 'elan-19',
     boatSpeedKts: 5.1,
@@ -135,9 +135,13 @@ test('Fixed-timestep determinism & v1->v2 save state migration', () => {
     weather: { phase: 'trade-winds', trueWindSpeedKts: 15 },
   };
   const migrated = migrateSaveState(legacyV1);
-  assert.equal(migrated.saveVersion, 2);
+  assert.equal(migrated.saveVersion, 3);
+  assert.equal(migrated.exteriorModelId, 'j80-hq');
   assert.equal(migrated.passage.xNm, 42);
   assert.ok(migrated.surgeVelMs > 2.0);
+
+  const migratedModelOverride = migrateSaveState({ ...legacyV1, exteriorModelId: 'sergei-lite' });
+  assert.equal(migratedModelOverride.exteriorModelId, 'sergei-lite');
 });
 
 test('Electrical solar charges in daytime and fridge consumes power', () => {

@@ -1,5 +1,66 @@
-import type { BoatId, BoatSpec, ChandleryItem, CharterContract, WorldHub } from '../types/sailing';
+import type { BoatId, BoatSpec, ChandleryItem, CharterContract, ExteriorModelId, WorldHub } from '../types/sailing';
 import { computeGreatCircleNm, HANDCRAFTED_HUBS } from './worldHubs';
+
+export interface ExteriorModelMeta {
+  id: ExteriorModelId;
+  label: string;
+  shortLabel: string;
+  glbUrl: string;
+  shipFamily: 'j80' | 'sergei';
+  variant: 'HQ' | 'Compact';
+  author: string;
+  license: string;
+  fileSizeMb: number;
+}
+
+export const EXTERIOR_MODEL_ORDER: ExteriorModelId[] = ['j80-hq', 'j80-lite', 'sergei-hq', 'sergei-lite'];
+
+export const EXTERIOR_MODELS: Record<ExteriorModelId, ExteriorModelMeta> = {
+  'j80-hq': {
+    id: 'j80-hq',
+    label: 'J-80 Sailboat (HQ · BoatUS)',
+    shortLabel: 'J-80 HQ (BoatUS)',
+    glbUrl: '/models/j-80_sailboat.glb',
+    shipFamily: 'j80',
+    variant: 'HQ',
+    author: 'BoatUS Foundation',
+    license: 'CC-BY-NC-ND-4.0',
+    fileSizeMb: 3.68,
+  },
+  'j80-lite': {
+    id: 'j80-lite',
+    label: 'J-80 Sailboat (Compact · BoatUS)',
+    shortLabel: 'J-80 Compact',
+    glbUrl: '/models/j-80_sailboat%20(1).glb',
+    shipFamily: 'j80',
+    variant: 'Compact',
+    author: 'BoatUS Foundation',
+    license: 'CC-BY-NC-ND-4.0',
+    fileSizeMb: 4.33,
+  },
+  'sergei-hq': {
+    id: 'sergei-hq',
+    label: 'Sailboat by Sergei (HQ)',
+    shortLabel: 'Sergei HQ',
+    glbUrl: '/models/sailboat.glb',
+    shipFamily: 'sergei',
+    variant: 'HQ',
+    author: 'Sergei',
+    license: 'CC-BY-4.0',
+    fileSizeMb: 2.02,
+  },
+  'sergei-lite': {
+    id: 'sergei-lite',
+    label: 'Sailboat by Sergei (Compact)',
+    shortLabel: 'Sergei Compact',
+    glbUrl: '/models/sailboat%20(1).glb',
+    shipFamily: 'sergei',
+    variant: 'Compact',
+    author: 'Sergei',
+    license: 'CC-BY-4.0',
+    fileSizeMb: 1.97,
+  },
+};
 
 export const BOAT_ORDER: BoatId[] = [
   'elan-19',
@@ -37,6 +98,7 @@ export const BOAT_SPECS: Record<BoatId, BoatSpec> = {
     hasWindvane: true,
     hasStaysail: false,
     hasHardDodger: false,
+    exteriorModelId: 'j80-hq',
     description:
       'Nimble, responsive 19-foot coastal sloop. Accelerates eagerly in light airs, tender in squalls—demands timely reefing and careful battery management.',
     delftHull: {
@@ -105,6 +167,7 @@ export const BOAT_SPECS: Record<BoatId, BoatSpec> = {
     hasWindvane: true,
     hasStaysail: false,
     hasHardDodger: false,
+    exteriorModelId: 'sergei-hq',
     description:
       'Lapstrake clinker classic with a long keel and doghouse cabin. Sea-kindly motion in steep chop and forgiving directional tracking under tiller or windvane.',
     delftHull: {
@@ -173,6 +236,7 @@ export const BOAT_SPECS: Record<BoatId, BoatSpec> = {
     hasWindvane: true,
     hasStaysail: false,
     hasHardDodger: false,
+    exteriorModelId: 'j80-hq',
     description:
       'Proven Fastnet storm survivor with deep fin-and-skeg keel, high ballast ratio, and crisp upwind pointing ability across open ocean troughs.',
     delftHull: {
@@ -241,6 +305,7 @@ export const BOAT_SPECS: Record<BoatId, BoatSpec> = {
     hasWindvane: true,
     hasStaysail: true,
     hasHardDodger: false,
+    exteriorModelId: 'sergei-hq',
     description:
       'Iconic British bluewater cutter with encapsulated long keel, inner staysail for storm balance, deep-freeze galley, and twin solar arch for the Great Capes.',
     delftHull: {
@@ -309,6 +374,7 @@ export const BOAT_SPECS: Record<BoatId, BoatSpec> = {
     hasWindvane: true,
     hasStaysail: true,
     hasHardDodger: true,
+    exteriorModelId: 'sergei-hq',
     description:
       'Swedish center-cockpit circumnavigator featuring a fixed hard dodger, heavy cutter rig, massive tankage, and high solar autonomy for multi-week crossings.',
     delftHull: {

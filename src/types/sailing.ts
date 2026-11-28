@@ -1,4 +1,5 @@
 export type BoatId = 'elan-19' | 'folkboat-25' | 'contessa-32' | 'rustler-36' | 'hallberg-42';
+export type ExteriorModelId = 'j80-hq' | 'j80-lite' | 'sergei-hq' | 'sergei-lite';
 
 export type CameraViewMode = 'third-person' | 'first-person-helm' | 'first-person-cabin';
 
@@ -106,6 +107,7 @@ export interface ReefPointSpec {
 
 export interface BoatSpec {
   id: BoatId;
+  exteriorModelId: ExteriorModelId;
   name: string;
   subtitle: string;
   lengthFt: number;
@@ -270,6 +272,7 @@ export interface DistressRecoveryState {
 export interface SimulationState {
   saveVersion: number;
   boatId: BoatId;
+  exteriorModelId: ExteriorModelId;
   vesselCfg: VesselCfgParams;
   simRealism: number; // 0 = Arcade, 0.5 = Cruising, 1 = Full Simulation
   realismPreset: RealismPreset;

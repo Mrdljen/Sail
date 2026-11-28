@@ -116,9 +116,9 @@ Every constant in Meridian Passage that does **not** come verbatim from a cited 
 
 ---
 
-## Last Sailing Presentation Change (HUD, Cabin Repeater, Surface Following & Speed Wake)
+## Restored Ocean Renderer, Model Mapping & Cabin Fittings
 
-The rows below record behavior, control, audio, and geometry tuning guesses from the last UI/3D pass. They do not change the physics models tracked above. The CPU Gerstner sampler is an algorithm port of this project's own ocean vertex shader: src/three/oceanScene.ts, evalWave, mirrored by evaluateGerstnerSurface and its inverse-displacement sampling. No Tiller source was copied for this pass.
+The rows below record presentation and render-budget guesses for the restored originals and the procedural cabin added beside the imported models. src/sim/oceanConfig.ts ports the shared CPU/GPU Gerstner field from DRIFT/js/waves.js (MIT); the code and THIRD_PARTY_NOTICES.md identify that source. No code was copied from By The Lee or Tiller in this restoration.
 
 ### Step 1: Instrument Data & Canvas HUD (src/sim/instrumentData.ts, src/components/SailingInstrumentPanel.tsx)
 
@@ -142,13 +142,19 @@ The rows below record behavior, control, audio, and geometry tuning guesses from
 | Per-event drag clamp | ±9° | Maximum heading change from one pointer event | Test fast swipes at 30/60 fps; a missed frame must not create an abrupt turn. |
 | Sheet control step | 10 percentage points | Trim change per mainsheet/jibsheet tap | Verify repeated taps trim smoothly from close-hauled to eased without overshoot. |
 | Sheet control limits | 5–100% | Lower/upper touch-control bounds | Tap repeatedly at both endpoints and verify the simulation and display stay in range. |
-| Cabin eye anchor | (0.10, 0.66, +0.40 roofLength) m | Procedural interior camera position, scaled by boat size | Check height and clearance against each generated cabin mesh in first-person view. |
-| Cabin look anchor | (-0.06, 0.43, -0.16 roofLength) m | Procedural interior camera aim, scaled by boat size | Check sightlines to helm, companionway, and fittings for every generated cabin. |
-| 3D wheel-to-rudder visual gain | 0.7 | Wheel rotation relative to rudder angle | Sweep both rudder stops and verify direction/travel are clear without changing rudder simulation. |
-| 3D wheel rim radius / tube | 0.40 m / 0.025 m | Procedural wheel proportions | Compare with common 600–800 mm yacht wheels and check clearance at each hull scale. |
-| Winch drum top/base radius and height | 0.075 m / 0.095 m / 0.14 m | Procedural self-tailing winch proportions | Compare with common 20–40 ft yacht winches and inspect cockpit reach at each hull scale. |
-| Winch crank length / knob radius | 0.20 m / 0.028 m | Procedural handle and grip size | Check hand-scale plausibility and clearance from coaming and adjacent winch. |
-| Winch placement | ±0.34 beam, 0.54 m local y, 0.15 m forward of cockpit center | Port/starboard winch placement | Inspect each cockpit and verify the mainsheet/jibsheet controls match their rig lines. |
+| Cabin camera anchors | Model-specific RAW_SPECS points in src/three/boatBuilder.ts | Positions the view at the supplied GLB helm and companionway | Compare each raw anchor with the model mesh, then check sightlines and roof clearance in both first-person views for both model families. |
+| Cabin envelope / floor | length min(0.44 x hull length, max(0.9 x hull scale, half camera-anchor gap)); width min(0.58 x beam, 1.45 x hull scale); floor max(0.04 x scale, camera anchor minY - 0.52 x scale) | Fits added furnishings inside the imported cabin volume | Inspect both GLB families in first-person cabin view; keep floor under berths and all furnishings below the coachroof. |
+| Cabin floor | 0.88 x cabin width, 0.92 x cabin length, 0.045 x scale thick; center at y=0.02 x scale | Teak floor footprint and thickness | Check floor edges do not protrude through the hull or disappear under berths at each hull scale. |
+| Settees / berth bases | cushions 0.34 x width by 0.48 x length; bases 0.35 x width by 0.50 x length; side offset 0.285 x width; aft offset -0.11 x length | Port and starboard berths with a center passage | Check passage width and collision-free clearance from cabin side and forward V-berths in both model families. |
+| Forward V-berths | each 0.30 x cabin width by 0.30 x cabin length; side offset 0.19 x width; aft position -0.32 x length; angle 0.17 rad | Pair of cushions in forepeak | Inspect fit at both ends of each interior; cushions should meet without crossing the centerline or companionway. |
+| Chart table / galley | port/stbd offsets +/-0.28 x width; counters 0.34-0.35 x width and 0.22-0.26 x length; tabletop y=0.48 x scale | Navigation table, chart display, and galley footprint | Check the screen/table and sink/stove fit under the cabin roof and leave a center passage. |
+| Cabin instrument layout | breaker panel 0.22 x width by 0.28 x scale at y=0.67 x scale; six switches at 0.085 x scale spacing; three autopilot keys at +/-0.07 x scale | VHF, breaker panel, and helm repeater controls | Use raycast targets from first-person view; verify each control is visible, separately clickable, and does not overlap furniture. |
+| Cabin light | lamp y=0.84 x scale, point light y=0.80 x scale, range 4.5 x scale, intensity 0.9 | Warm light over the cabin passage | Compare switch on/off in dark scenes; make the whole cabin readable without washing out the display. |
+| Wheel visual rotation gain | 2.2 x rudder angle on wheel Z; -0.7 on Y | Makes helm movement visible while staying linked to rudder state | Sweep both rudder stops; verify wheel direction and travel track the rudder without changing physics. |
+| Wheel rim radius / tube | 0.36 / 0.021 x hull scale | Procedural helm wheel size | Compare the wheel with a 600-800 mm yacht wheel and verify hand and binnacle clearance on each hull. |
+| Winch drum radii / height | 0.075 / 0.095 / 0.14 x hull scale | Procedural self-tailing winch proportions | Compare with common 20-40 ft yacht winches and inspect cockpit reach and coaming clearance. |
+| Winch crank / knob | 0.20 / 0.028 x hull scale | Handle and grip size | Inspect hand-scale plausibility, rotation, and clearance from cockpit fittings on both model families. |
+| Winch placement | +/-0.30 x beam, 0.20 x hull scale above cockpit origin, -0.12 x hull scale aft | Port and starboard sheet controls | Compare each winch with cockpit and sheet leads in all four GLBs; correct if a handle intersects a seat or coaming. |
 
 ### Step 4 (Hull): No New Hull-Resistance Guess
 
@@ -173,20 +179,29 @@ The last presentation pass did not change Delft residuary resistance, ITTC-57 fr
 
 The new HUD and cabin repeater read reefLevel from shared simulation state. The last pass did not change reef-point geometry, sail area, center of effort, or sail-wear equations; use the Step 3 rows above. Verify cabin and tablet reef controls show the same reef level.
 
-### Waves: Surface Coupling & Speed Wake (src/three/oceanScene.ts, src/three/boatBuilder.ts)
+### Waves: Restored Spectral Surface, Hull Following & Wake (src/sim/oceanConfig.ts, src/three/oceanScene.ts, src/three/boatBuilder.ts)
 
 | Constant | Value | Meaning | How to Validate |
 |---|---:|---|---|
-| CPU horizontal-displacement inversion count | 3 iterations | Fixed-point solve maps the displaced world waterline back to the Gerstner parameter coordinate | Compare CPU height/slope with the shader surface over wave phases; measure vertical mismatch and raise the count only if visible. |
-| Rendered surface clearance | 0.025 m | Small offset above sampled water to avoid waterline z-fighting | Inspect calm and 3.3 m seas from cockpit/third-person; no gap or water cutting through hull. |
-| Ocean plane subdivisions | 120 standard, 76 software GL | Original single 1400 m × 1400 m ocean mesh resolution | Compare the displaced wave silhouette and hull contact in both renderers, then check frame time on target hardware. |
-| Surface pitch gain / clamp | 0.78, ±0.24 rad | Converts sampled longitudinal slope to boat pitch | Compare hull rotation with sampled plane under long/short swells; confirm the cap is not routinely hit. |
-| Surface roll gain / clamp | 0.68, ±0.22 rad | Converts sampled transverse slope to wave roll before the visual blend | Separate wave roll from simulated heel and confirm combined pose stays plausible in beam seas. |
-| Bow-wake speed ramp | 0.35–5.0 kt | Speed range where foam wash grows from zero to full | Compare stopped, drifting, and 2–6 kt runs; build should be smooth without a threshold pop. |
-| Bow-wake edge width | 0.12–0.58 m | Soft foam edge around the forward V | Inspect close/cockpit views at 1, 3, and 6 kt; keep the V narrow and attached to bow. |
-| Bow-wake spread / decay | 0.34 × bow distance, 0.55 × hull length | V-wave widening and fade length | Compare wake angle/length across boat sizes and speeds against reference cruising-yacht wake video. |
-| Stern-wake edge width | 0.10–0.48 m | Soft edge around each stern wake line | Inspect behind transom at low/high speed; keep twin lines visible without a broad foam slab. |
-| Stern-wake spread / decay | 0.12 × stern distance, 15 m decay length | Wake divergence and exponential fade | Compare at 2, 4, and 7 kt and across hull sizes; keep the wake attached near stern and fading with distance. |
-| Bow / stern wash contribution | 0.42 / 0.22 | Relative foam contribution from bow/stern wakes | Compare against reference yacht wakes without changing wave-crest foam. |
-| Wake texture modulation | 0.55 + 0.45 × foam texture | Breaks wake into textured foam rather than a flat stripe | Inspect calm/rough water at several speeds; texture must add detail without hiding the wake. |
-| Stern-particle surface clearance | 0.035 m | Offset for particle wake sprites above sampled water | Inspect over crests/troughs; confirm sprites neither sink nor float visibly above the surface. |
+| Spectral component count | 24 waves | CPU/GPU detail count for the Phillips spectrum | Compare CPU samples to rendered shader waves across calm and rough presets; check frame time on a tablet-class GPU. |
+| Spectrum reference wind | 10.5 m/s, 0.28 rad | Reference wind speed and propagation angle used to seed the deterministic spectrum | Compare the field's dominant direction and period with rendered wind direction; verify nautical degrees map correctly. |
+| Target vertical sigma | 0.72 m (reference height 1.44 m) | Normalizes spectral amplitude before weather scaling | Compare crest-to-trough height at scale 1 against the reference field; verify weather scaling is monotonic and reaches intended sea states. |
+| Wavelength bounds | 5.5-115 m | Short chop to long swell wavelength range | Inspect wave detail near the boat and horizon for aliasing/repetition; compare periods with observed open-water swell. |
+| Direction spread | 0.32 + 1.15 x normalized frequency radians | Broadens short-wave headings more than long swell | Inspect crossed seas and confirm dominant swell follows wind while short chop fans naturally. |
+| Phase-speed jitter | 0.94-1.06 x sqrt(gk) | Small frequency variation that avoids a mechanically uniform field | Observe a long run; wave groups should move continuously without visibly repeating or drifting from CPU motion. |
+| Gerstner steepness | clamp(0.28 + 0.54 x f, 0.22, 0.84); total sum(k x amp x steep) <= 0.78 | Limits individual and combined horizontal crest sharpening | Check wave crests remain smooth and non-folding at the largest sea state on standard and ultra tiers. |
+| Spectrum seed | 20260609 | Reproducible wave directions, amplitudes, and phases | Reload and compare phases and boat response; the ocean should reproduce exactly. |
+| Weather-to-spectrum gain | clamp(waveHeightM, 0.25, 3.6) x 0.48 | Maps simulation significant wave height to renderer amplitude | Compare 0.25, 1, and 3.6 m weather against rendered crest-to-trough height; tune if the scale is not monotonic or visibly mis-sized. |
+| Hull sample footprint | Half-length max(2.6 m, 0.42 x hull length); half-beam max(1.25 m, 0.42 x half-length) | CPU sample points used for heave, pitch, and roll | Compare sampled motion with the boat footprint on long and short waves; ensure smaller boats do not sample an unrealistically tiny footprint. |
+| Heave sample weights / limit | Midpoint 0.40, four hull points 0.15 each; clamp +/-1.35 m | Smooths sampled surface height and limits extreme bob | Compare hull waterline at calm and 3.6 m wave settings; avoid sinking through crests or visibly hovering. |
+| Surface pitch gain / clamp | 0.58, +/-0.15 rad | Converts sampled longitudinal slope to hull pitch | Compare bow/stern sample delta with rendered wave slope; confirm pitch follows the surface without abrupt rotation. |
+| Surface roll gain / clamp | 0.46, +/-0.13 rad | Converts sampled transverse slope to wave roll before simulated heel | Separate wave roll from simulated heel in beam seas and verify the combined pose remains plausible. |
+| Wave-motion smoothing | Heave 4.2 s^-1, pitch 3.8 s^-1, roll 3.4 s^-1 | Dampens hull motion without disconnecting it from the sampled surface | Compare motion lag against wave period; lower lag while avoiding jitter at 30 and 60 fps. |
+| Hull surface clearance | 0.025 m | Small visual offset above sampled water to avoid waterline z-fighting | Inspect calm and rough states from cabin and chase views; no visible gap or water cutting through the hull. |
+| Polar ocean geometry | Radius 1550 m; rings 92 and segments 128 standard, 68 and 96 software GL | Variable-density radial surface and fallback detail | Compare wave silhouette near and far from camera, then measure frame time on a tablet and software renderer. |
+| Auto-tier budget | 24 ms threshold; 4 warmup frames; finish at 16 samples or 5 after 1400 ms; discard 2 high outliers at 6+ samples | Selects the ultra water tier at startup | Repeat startup on low-end and high-end devices; ensure tier changes match sustained frame time rather than shader compilation spikes. |
+| Stern wake pool and trigger | 42 sprites; spawn above 0.6 kt with 0.78 per-frame chance | Produces a small wake trail behind a moving boat | Compare stopped, drifting, and 2-6 kt motion; ensure no wake appears at rest and the trail does not flicker or overwhelm the stern. |
+| Stern wake persistence and drift | Life decays 0.45 s^-1; drift speed 0.52 x boat speed; lateral spawn scatter +/-0.325 m | Trails and separates foam from the transom | Inspect behind the stern at several speeds; foam should move aft smoothly and fade without a hard cutoff. |
+| Stern wake surface placement | Sampled surface +0.07 m; sprite scale (1.3 - life x 0.65) x 1.15 | Keeps sprites on the same wave field and grows them as they fade | Inspect particles over crests and troughs; they should neither sink into nor float above the ocean. |
+| Bow spray pool and threshold | 32 droplets; spawn above 2.4 kt; rate (speed/6.5) x (0.4 + 0.35 x waveHeightM) | Adds bow spray at higher speed and in rougher water | Compare 1, 3, and 6 kt in calm and rough water; tune until spray responds smoothly to speed and wave height. |
+| Bow spray launch | +/-0.25 m side offset; vertical impulse 1.6-3.1 m/s; lateral impulse 1.2-2.3 m/s and aft impulse 1.4 m/s | Initial droplet position and velocity | Inspect spray direction and lifespan from side and chase views; droplets should arc out from the bow and clear the hull. |

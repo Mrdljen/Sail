@@ -1,9 +1,30 @@
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { Sky } from 'three/addons/objects/Sky.js';
+import {
+  deriveUltraOceanWeatherParams,
+  evaluateOceanTierFromFrameTimes,
+  N_SPECTRAL_WAVES,
+  resolveOceanTier,
+  sampleGerstnerMotion,
+  sampleSpectralHeight,
+  SPECTRAL_FIELD,
+  SPECTRAL_REF_HEIGHT,
+  SPECTRAL_WIND_ANGLE,
+  type ActiveOceanTier,
+  type OceanFrameStats,
+  type OceanQualityPreference,
+} from '../sim/oceanConfig';
 import { buildSailboatModel, syncBoatVisuals, type BuiltBoat, type InteractiveAction } from './boatBuilder';
 import { createProceduralTextures } from './proceduralTextures';
-import type { BoatId, CameraViewMode, GameScreenState, SimulationState } from '../types/sailing';
+import { isWebGL2UltraWaterSupported, UltraWaterOcean } from './ultraWater';
+import type {
+  BoatId,
+  CameraViewMode,
+  ExteriorModelId,
+  GameScreenState,
+  SimulationState,
+} from '../types/sailing';
 
 // Pre-allocated scratch math helpers (zero GC inside animation loop)
 const _v1 = new THREE.Vector3();
@@ -26,131 +47,57 @@ const _tradeSun = new THREE.Color(0xfff1d6);
 const _sunsetSun = new THREE.Color(0xff9f5a);
 const _squallSun = new THREE.Color(0x7c8fa3);
 
-// Coupled 6-wave Gerstner spectrum (CPU + GLSL twin, inspired by tides-of-fortune waves.js)
-interface GerstnerWave {
-  dirX: number;
-  dirZ: number;
-  lambda: number;
-  amp: number;
-  q: number;
-  speed: number;
-}
+const N_WAVES = N_SPECTRAL_WAVES;
+const REF_HEIGHT = SPECTRAL_REF_HEIGHT;
+const WAVE_UNIFORM_A = SPECTRAL_FIELD.uniformA;
+const WAVE_UNIFORM_B = SPECTRAL_FIELD.uniformB;
 
-const GERSTNER_WAVES: readonly GerstnerWave[] = [
-  { dirX: 0.84, dirZ: 0.54, lambda: 76, amp: 0.42, q: 0.45, speed: 1.35 },
-  { dirX: -0.45, dirZ: 0.89, lambda: 48, amp: 0.27, q: 0.42, speed: 1.72 },
-  { dirX: 0.66, dirZ: -0.75, lambda: 27, amp: 0.14, q: 0.36, speed: 2.25 },
-  { dirX: 0.92, dirZ: -0.39, lambda: 15, amp: 0.075, q: 0.30, speed: 2.90 },
-  { dirX: -0.72, dirZ: -0.69, lambda: 9.5, amp: 0.042, q: 0.24, speed: 3.40 },
-  { dirX: 0.32, dirZ: 0.95, lambda: 5.8, amp: 0.022, q: 0.20, speed: 4.10 },
-];
+// Variable-density concentric polar sea grid: <0.8m vertex spacing around the hull, expanding to 1580m horizon
+function createPolarOceanGeometry(rings: number, segs: number, maxRadius: number): THREE.BufferGeometry {
+  const positions: number[] = [];
+  const uvs: number[] = [];
+  const indices: number[] = [];
+  const rowStride = segs + 1;
 
-interface GerstnerSample {
-  height: number;
-  horizontalX: number;
-  horizontalZ: number;
-  slopeX: number;
-  slopeZ: number;
-}
-
-function evaluateGerstnerSurface(
-  elapsedSec: number,
-  x: number,
-  z: number,
-  waveScale: number,
-): GerstnerSample {
-  // Local CPU port of this file's vertex-shader evalWave; the shared equation
-  // keeps hull and wake samples on the rendered ocean surface.
-  let height = 0;
-  let horizontalX = 0;
-  let horizontalZ = 0;
-  let slopeX = 0;
-  let slopeZ = 0;
-  for (const wave of GERSTNER_WAVES) {
-    const k = (Math.PI * 2) / wave.lambda;
-    const amp = wave.amp * waveScale;
-    const phase = (wave.dirX * x + wave.dirZ * z) * k - elapsedSec * wave.speed;
-    const sine = Math.sin(phase);
-    const cosine = Math.cos(phase);
-    const horizontal = wave.q * amp * cosine;
-    horizontalX += wave.dirX * horizontal;
-    horizontalZ += wave.dirZ * horizontal;
-    height += amp * sine;
-    slopeX += amp * k * cosine * wave.dirX;
-    slopeZ += amp * k * cosine * wave.dirZ;
-  }
-  return { height, horizontalX, horizontalZ, slopeX, slopeZ };
-}
-
-function sampleGerstnerMotion(
-  elapsedSec: number,
-  offsetX: number,
-  offsetZ: number,
-  waveHeightM: number,
-  headingDeg: number,
-): { heaveM: number; pitchRad: number; rollRad: number } {
-  const waveScale = THREE.MathUtils.clamp(waveHeightM, 0.25, 3.8) * 0.58;
-  // Match the displaced ocean mesh at the boat's actual world-space waterline.
-  // Gerstner waves also move water sideways, so invert that displacement before
-  // reading its height and local surface slope.
-  const targetX = offsetX;
-  const targetZ = offsetZ;
-  let sampleX = targetX;
-  let sampleZ = targetZ;
-  let surface = evaluateGerstnerSurface(elapsedSec, sampleX, sampleZ, waveScale);
-  for (let i = 0; i < 3; i++) {
-    sampleX = targetX - surface.horizontalX;
-    sampleZ = targetZ - surface.horizontalZ;
-    surface = evaluateGerstnerSurface(elapsedSec, sampleX, sampleZ, waveScale);
+  for (let ir = 0; ir <= rings; ir++) {
+    const t = ir / rings;
+    const r = ir === 0 ? 0 : 32.0 * t + maxRadius * Math.pow(t, 3.6);
+    for (let ia = 0; ia <= segs; ia++) {
+      const a = (ia / segs) * Math.PI * 2;
+      const x = Math.cos(a) * r;
+      const z = Math.sin(a) * r;
+      positions.push(x, 0, z);
+      uvs.push(ia / segs, t);
+    }
   }
 
-  // Boat forward axis in world XZ: (sin(hdg), -cos(hdg)); starboard right: (cos(hdg), sin(hdg))
-  const hRad = THREE.MathUtils.degToRad(headingDeg);
-  const fwdX = Math.sin(hRad);
-  const fwdZ = -Math.cos(hRad);
-  const rightX = Math.cos(hRad);
-  const rightZ = Math.sin(hRad);
-
-  const pitchSlope = surface.slopeX * fwdX + surface.slopeZ * fwdZ;
-  const rollSlope = surface.slopeX * rightX + surface.slopeZ * rightZ;
-
-  return {
-    heaveM: surface.height,
-    pitchRad: THREE.MathUtils.clamp(Math.atan(pitchSlope) * 0.78, -0.24, 0.24),
-    rollRad: THREE.MathUtils.clamp(-Math.atan(rollSlope) * 0.68, -0.22, 0.22),
-  };
-}
-
-function sampleGerstnerHeightAt(
-  elapsedSec: number,
-  worldX: number,
-  worldZ: number,
-  offsetX: number,
-  offsetZ: number,
-  waveHeightM: number,
-): number {
-  const farFade = 1 - THREE.MathUtils.smoothstep(Math.hypot(worldX, worldZ), 220, 620);
-  const waveScale = THREE.MathUtils.clamp(waveHeightM, 0.25, 3.8) * 0.58 * farFade;
-  const targetX = worldX + offsetX;
-  const targetZ = worldZ + offsetZ;
-  let sampleX = targetX;
-  let sampleZ = targetZ;
-  let surface = evaluateGerstnerSurface(elapsedSec, sampleX, sampleZ, waveScale);
-  for (let i = 0; i < 3; i++) {
-    sampleX = targetX - surface.horizontalX;
-    sampleZ = targetZ - surface.horizontalZ;
-    surface = evaluateGerstnerSurface(elapsedSec, sampleX, sampleZ, waveScale);
+  for (let ir = 0; ir < rings; ir++) {
+    for (let ia = 0; ia < segs; ia++) {
+      const a = ir * rowStride + ia;
+      const b = a + 1;
+      const c = a + rowStride;
+      const d = c + 1;
+      indices.push(a, d, c, a, b, d);
+    }
   }
-  return surface.height;
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  return geo;
 }
 
 export interface OceanSceneCallbacks {
   getState: () => SimulationState;
   getScreenState: () => GameScreenState;
   getCameraMode: () => CameraViewMode;
+  initialOceanPreference?: OceanQualityPreference;
   onTickSimulation: (dtSeconds: number) => void;
   onInteract3D: (action: InteractiveAction) => void;
   onHover3D: (label: string | null, x: number, y: number) => void;
+  onOceanStats?: (stats: OceanFrameStats) => void;
 }
 
 function detectSoftwareGl(): boolean {
@@ -368,6 +315,7 @@ export class SailingSceneController {
   private isSoftwareGl: boolean;
   private textures: ReturnType<typeof createProceduralTextures>;
   private currentBoatId: BoatId;
+  private currentExteriorModelId: ExteriorModelId;
   private boat: BuiltBoat;
   private sky: Sky;
   private starfield: ReturnType<typeof createStarfield>;
@@ -376,11 +324,26 @@ export class SailingSceneController {
   private harborVessels: Array<ReturnType<typeof createDistantVessel>>;
   private sunLight: THREE.DirectionalLight;
   private hemiLight: THREE.HemisphereLight;
+  private standardOceanMesh: THREE.Mesh;
+  private ultraOcean: UltraWaterOcean | null = null;
+  private webgl2UltraSupported = false;
+  private oceanPreference: OceanQualityPreference = 'auto';
+  private autoSelectedTier: ActiveOceanTier = 'standard';
+  private activeOceanTier: ActiveOceanTier = 'standard';
+  private benchmarkComplete = false;
+  private benchmarkWarmupFrames = 0;
+  private benchmarkSamplesMs: number[] = [];
+  private benchmarkStartMs = 0;
+  private emaFrameMs = 16.7;
+  private lastStatsEmitMs = 0;
+  private smoothedHeave = 0;
+  private smoothedPitch = 0;
+  private smoothedRoll = 0;
   private oceanUniforms = {
     uTime: { value: 0 },
     uWaveHeight: { value: 1.1 },
-    uBoatSpeed: { value: 0 },
     uOffset: { value: new THREE.Vector2(0, 0) },
+    uWindDir: { value: new THREE.Vector2(Math.cos(SPECTRAL_WIND_ANGLE), Math.sin(SPECTRAL_WIND_ANGLE)) },
     uShoalMix: { value: 0.4 },
     uSquallMix: { value: 0.2 },
     uSunDir: { value: new THREE.Vector3(0.4, 0.65, -0.5).normalize() },
@@ -390,6 +353,8 @@ export class SailingSceneController {
     uBoatHull: { value: new THREE.Vector3(5.9, 2.38, 1.0) },
     uDetailMap: { value: null as THREE.Texture | null },
     uFoamMap: { value: null as THREE.Texture | null },
+    uWaveA: { value: WAVE_UNIFORM_A },
+    uWaveB: { value: WAVE_UNIFORM_B },
   };
   private wakeMesh: THREE.InstancedMesh;
   private wakeLife = new Float32Array(42);
@@ -406,8 +371,8 @@ export class SailingSceneController {
   private pointer = new THREE.Vector2();
   private lastHoverCheck = 0;
   private orbitYaw = 0.65;
-  private orbitPitch = 0.28;
-  private orbitDist = 14.5;
+  private orbitPitch = 0.22;
+  private orbitDist = 16.8;
   // 1st-person look offset (allows looking around inside Helm & Cabin views)
   private fpLookYaw = 0;
   private fpLookPitch = 0;
@@ -504,33 +469,34 @@ export class SailingSceneController {
     const initialState = callbacks.getState();
     this.textures.updateCabinInstruments(initialState);
     this.currentBoatId = initialState.boatId;
-    this.boat = buildSailboatModel(this.currentBoatId, this.textures, this.isSoftwareGl);
+    this.currentExteriorModelId = initialState.exteriorModelId;
+    this.boat = buildSailboatModel(
+      this.currentBoatId,
+      this.textures,
+      this.isSoftwareGl,
+      this.currentExteriorModelId,
+    );
     scene.add(this.boat.root);
 
-    // Upgraded Coupled 6-Wave Gerstner Ocean with Jacobian Whitecaps, Fresnel/SSS & Hull Cavity Exclusion
-    const oceanSegs = this.isSoftwareGl ? 76 : 120;
-    const oceanGeo = new THREE.PlaneGeometry(1400, 1400, oceanSegs, oceanSegs);
-    oceanGeo.rotateX(-Math.PI / 2);
+    // Variable-density polar spectral ocean: MIT drift 24-wave Phillips spectrum + WaterThreeJS GGX/SSS/Wind Foam
+    const oceanRings = this.isSoftwareGl ? 68 : 92;
+    const oceanSegs = this.isSoftwareGl ? 96 : 128;
+    const oceanGeo = createPolarOceanGeometry(oceanRings, oceanSegs, 1550);
     const oceanMat = new THREE.MeshStandardMaterial({
       color: 0xffffff,
-      roughness: 0.22,
-      metalness: 0.05,
-      envMapIntensity: 0.45,
+      roughness: 0.16,
+      metalness: 0.04,
+      envMapIntensity: 0.42,
     });
     const uniforms = this.oceanUniforms;
     uniforms.uDetailMap.value = this.textures.oceanNormalTex;
     uniforms.uFoamMap.value = this.textures.oceanFoamTex;
 
-    const waveConstsGlsl = GERSTNER_WAVES.map(
-      (w, idx) =>
-        `const vec4 W_${idx} = vec4(${w.dirX.toFixed(4)}, ${w.dirZ.toFixed(4)}, ${((Math.PI * 2) / w.lambda).toFixed(5)}, ${w.amp.toFixed(4)}); const vec2 WS_${idx} = vec2(${w.q.toFixed(3)}, ${w.speed.toFixed(3)});`,
-    ).join('\n');
-
     oceanMat.onBeforeCompile = (shader) => {
       shader.uniforms.uTime = uniforms.uTime;
       shader.uniforms.uWaveHeight = uniforms.uWaveHeight;
-      shader.uniforms.uBoatSpeed = uniforms.uBoatSpeed;
       shader.uniforms.uOffset = uniforms.uOffset;
+      shader.uniforms.uWindDir = uniforms.uWindDir;
       shader.uniforms.uShoalMix = uniforms.uShoalMix;
       shader.uniforms.uSquallMix = uniforms.uSquallMix;
       shader.uniforms.uSunDir = uniforms.uSunDir;
@@ -540,34 +506,23 @@ export class SailingSceneController {
       shader.uniforms.uBoatHull = uniforms.uBoatHull;
       shader.uniforms.uDetailMap = uniforms.uDetailMap;
       shader.uniforms.uFoamMap = uniforms.uFoamMap;
+      shader.uniforms.uWaveA = uniforms.uWaveA;
+      shader.uniforms.uWaveB = uniforms.uWaveB;
 
       shader.vertexShader =
         `
+        #define N_WAVES ${N_WAVES}
         uniform float uTime;
         uniform float uWaveHeight;
-        uniform float uBoatSpeed;
         uniform vec2 uOffset;
+        uniform vec4 uWaveA[N_WAVES];
+        uniform vec4 uWaveB[N_WAVES];
+        const float REF_HEIGHT = ${REF_HEIGHT.toFixed(6)};
         varying float vWaveCrest;
         varying float vJac;
         varying vec3 vWorldPos;
         varying vec2 vSeaUv;
         varying vec3 vWaveSlope;
-        ${waveConstsGlsl}
-
-        void evalWave(vec2 wp, vec4 w, vec2 ws, float waveScale, inout vec3 disp, inout vec3 tx, inout vec3 tz) {
-          float k = w.z;
-          float a = w.w * waveScale;
-          float qa = ws.x * a;
-          float ph = dot(w.xy, wp) * k - uTime * ws.y;
-          float s = sin(ph);
-          float c = cos(ph);
-          disp.xz += w.xy * (qa * c);
-          disp.y += a * s;
-          float qk = qa * k * s;
-          float ak = a * k * c;
-          tx += vec3(-qk * w.x * w.x, ak * w.x, -qk * w.x * w.y);
-          tz += vec3(-qk * w.x * w.y, ak * w.y, -qk * w.y * w.y);
-        }
       ` + shader.vertexShader;
 
       shader.vertexShader = shader.vertexShader.replace(
@@ -576,23 +531,37 @@ export class SailingSceneController {
         #include <begin_vertex>
         vec2 wp = transformed.xz + uOffset;
         float distCam = length(transformed.xz);
-        float farAtten = 1.0 - smoothstep(220.0, 620.0, distCam);
-        float waveScale = clamp(uWaveHeight, 0.25, 3.8) * 0.58 * farAtten;
+        float farAtten = 1.0 - smoothstep(260.0, 960.0, distCam) * 0.78;
+        float chopAtten = 1.0 - smoothstep(95.0, 380.0, distCam) * 0.72;
+        float waveScale = clamp(uWaveHeight, 0.25, 3.6) * 0.48 * farAtten;
 
         vec3 disp = vec3(0.0);
         vec3 tx = vec3(1.0, 0.0, 0.0);
         vec3 tz = vec3(0.0, 0.0, 1.0);
-        evalWave(wp, W_0, WS_0, waveScale, disp, tx, tz);
-        evalWave(wp, W_1, WS_1, waveScale, disp, tx, tz);
-        evalWave(wp, W_2, WS_2, waveScale, disp, tx, tz);
-        evalWave(wp, W_3, WS_3, waveScale, disp, tx, tz);
-        evalWave(wp, W_4, WS_4, waveScale, disp, tx, tz);
-        evalWave(wp, W_5, WS_5, waveScale, disp, tx, tz);
+        for (int i = 0; i < N_WAVES; i++) {
+          vec2 d = uWaveA[i].xy;
+          float k = uWaveA[i].z;
+          float cSpd = uWaveA[i].w;
+          float a = uWaveB[i].x * waveScale;
+          float st = uWaveB[i].y * chopAtten;
+          float ph0 = uWaveB[i].z;
+
+          float ph = k * dot(d, wp) - cSpd * uTime + ph0;
+          float s = sin(ph);
+          float c = cos(ph);
+          float qa = st * a;
+          disp.xz += d * (qa * c);
+          disp.y += a * s;
+          float qk = qa * k * s;
+          float ak = a * k * c;
+          tx += vec3(-qk * d.x * d.x, ak * d.x, -qk * d.x * d.y);
+          tz += vec3(-qk * d.x * d.y, ak * d.y, -qk * d.y * d.y);
+        }
 
         transformed += disp;
         vWorldPos = transformed;
         vSeaUv = wp + disp.xz;
-        vWaveCrest = clamp((disp.y / max(0.35, waveScale * 0.9)) * 0.55 + 0.5, 0.0, 1.0);
+        vWaveCrest = clamp((disp.y / max(0.32, REF_HEIGHT * waveScale)) * 0.52 + 0.5, 0.0, 1.0);
         vJac = tx.x * tz.z - tx.z * tz.x;
         vWaveSlope = normalize(cross(tz, tx));
         `,
@@ -602,7 +571,7 @@ export class SailingSceneController {
         `
         uniform float uTime;
         uniform float uWaveHeight;
-        uniform float uBoatSpeed;
+        uniform vec2 uWindDir;
         uniform float uShoalMix;
         uniform float uSquallMix;
         uniform vec3 uSunDir;
@@ -617,6 +586,17 @@ export class SailingSceneController {
         varying vec3 vWorldPos;
         varying vec2 vSeaUv;
         varying vec3 vWaveSlope;
+
+        float fresnelF(float c, float f0) {
+          return f0 + (1.0 - f0) * pow(clamp(1.0 - c, 0.0, 1.0), 5.0);
+        }
+
+        // GGX / Trowbridge-Reitz physical sun glint distribution (WaterThreeJS Ocean.js)
+        float dggx(float NoH, float a) {
+          float a2 = a * a;
+          float d = (NoH * a2 - NoH) * NoH + 1.0;
+          return a2 / (3.14159265 * d * d);
+        }
 
         float glslHullHalfWidth(float t, float beam) {
           float tc = clamp(t, 0.001, 0.999);
@@ -639,91 +619,97 @@ export class SailingSceneController {
         '#include <color_fragment>',
         `
         #include <color_fragment>
-        // Per-pixel dry hull interior exclusion: discard water inside cockpit, cabin & bilge envelope
+        // Per-pixel dry hull interior exclusion: strictly inside recessed cabin & cockpit soles (inside outer hull skin)
         vec3 bPos = (uBoatInvMatrix * vec4(vWorldPos, 1.0)).xyz;
         float bt = bPos.z / max(1.0, uBoatHull.x) + 0.5;
         float hullHw = glslHullHalfWidth(bt, uBoatHull.y);
-        float hullGy = glslHullGunwaleY(bt, uBoatHull.z);
         if (
-          bt > 0.015 && bt < 0.985 &&
-          abs(bPos.x) < hullHw * 0.96 &&
-          bPos.y < hullGy + 0.40 * uBoatHull.z &&
-          bPos.y > -1.25 * uBoatHull.z
+          bt > 0.25 && bt < 0.85 &&
+          abs(bPos.x) < hullHw * 0.36 &&
+          bPos.y < 0.25 * uBoatHull.z &&
+          bPos.y > -0.02 * uBoatHull.z
         ) {
           discard;
         }
 
-        // Dual-scrolling procedural capillary ripples faded with distance (tides-of-fortune pattern)
+        // Dual-scrolling capillary ripple normals + micro-facet sparkle (WaterThreeJS + tides-of-fortune)
         float camDist = length(cameraPosition - vWorldPos);
-        float detFade = 1.0 - smoothstep(32.0, 260.0, camDist);
-        vec2 nUv1 = vSeaUv * 0.068 + vec2(uTime * 0.032, uTime * 0.018);
-        vec2 nUv2 = vSeaUv * 0.145 + vec2(-uTime * 0.024, uTime * 0.036);
-        vec2 dn = (texture2D(uDetailMap, nUv1).rg - 0.5) * 0.55 + (texture2D(uDetailMap, nUv2).rg - 0.5) * 0.42;
-        float rippleStr = (0.14 + 0.10 * clamp(uWaveHeight * 0.45, 0.0, 1.0)) * detFade;
+        float detFade = 1.0 - smoothstep(28.0, 340.0, camDist);
+        vec2 windFlow = uWindDir * uTime * 0.032;
+        vec2 nUv1 = vSeaUv * 0.075 + windFlow;
+        vec2 nUv2 = vSeaUv * 0.165 - windFlow * 1.15 + vec2(uTime * 0.012, -uTime * 0.019);
+        vec2 dn = (texture2D(uDetailMap, nUv1).rg - 0.5) * 0.62 + (texture2D(uDetailMap, nUv2).rg - 0.5) * 0.48;
+        float rippleStr = (0.17 + 0.12 * clamp(uWaveHeight * 0.42, 0.0, 1.0)) * detFade;
         vec3 Nworld = normalize(vWaveSlope + vec3(dn.x * rippleStr, 0.0, dn.y * rippleStr));
 
         vec3 Vw = normalize(cameraPosition - vWorldPos);
         vec3 Lw = normalize(uSunDir);
-        float rFar = smoothstep(55.0, 520.0, camDist);
+        float sunElev = smoothstep(-0.04, 0.22, Lw.y);
+        float rFar = smoothstep(55.0, 620.0, camDist);
 
-        // Base absorption + coastal shoal palette
-        vec3 deepCobalt = vec3(0.010, 0.062, 0.155);
-        vec3 coastalTurquoise = vec3(0.032, 0.295, 0.345);
-        vec3 waterCol = mix(deepCobalt, coastalTurquoise, uShoalMix * 0.65);
+        // Deep pelagic cobalt vs sunlit coastal turquoise depth gradient
+        vec3 deepCobalt = vec3(0.008, 0.048, 0.135);
+        vec3 midPelagic = vec3(0.014, 0.125, 0.235);
+        vec3 coastalTurquoise = vec3(0.028, 0.305, 0.355);
+        vec3 waterCol = mix(deepCobalt, midPelagic, vWaveCrest * 0.55);
+        waterCol = mix(waterCol, coastalTurquoise, uShoalMix * 0.62);
 
-        // Subsurface crest scatter (back-lit green-cyan translucency in steep wave crests)
-        float sssDir = pow(clamp(dot(Vw, -Lw), 0.0, 1.0), 3.0) * 0.65 + 0.35;
-        vec3 sssCol = mix(vec3(0.025, 0.255, 0.335), vec3(0.095, 0.515, 0.485), uShoalMix * 0.72);
-        waterCol = mix(waterCol, sssCol, clamp(vWaveCrest * 0.85 * sssDir, 0.0, 1.0));
+        // Back-lit subsurface crest translucency (WaterThreeJS SSS pattern)
+        float backLit = pow(max(dot(Vw, -Lw), 0.0), 3.4) * 0.68 + 0.24;
+        float crestThin = smoothstep(0.44, 0.96, vWaveCrest) * max(Nworld.y, 0.0);
+        vec3 sssCol = mix(vec3(0.025, 0.32, 0.38), vec3(0.095, 0.55, 0.50), uShoalMix * 0.75);
+        waterCol += sssCol * backLit * crestThin * (0.45 + 0.65 * sunElev) * (1.0 - uSquallMix * 0.55);
 
-        // Fresnel sky reflection + sun glint glitter
-        vec3 NF = normalize(mix(Nworld, vec3(0.0, 1.0, 0.0), rFar * 0.65));
+        // Schlick Fresnel sky reflection with distance smoothing
+        vec3 NF = normalize(mix(Nworld, vec3(0.0, 1.0, 0.0), rFar * 0.58));
         float NdotV = max(dot(NF, Vw), 0.0);
-        float fres = 0.02 + 0.98 * pow(1.0 - NdotV, 5.0);
+        float fres = fresnelF(NdotV, 0.02);
         vec3 Rw = reflect(-Vw, NF);
-        vec3 skyRefl = mix(uSkyHorizon, uSkyZenith, clamp(Rw.y * 1.4, 0.0, 1.0));
-        skyRefl *= 1.0 - 0.32 * uSquallMix;
-        waterCol = mix(waterCol, skyRefl, clamp(fres * 0.76, 0.0, 0.78));
+        Rw.y = abs(Rw.y);
+        vec3 skyRefl = mix(uSkyHorizon, uSkyZenith, clamp(pow(Rw.y, 0.72) * 1.25, 0.0, 1.0));
+        skyRefl *= 1.0 - 0.34 * uSquallMix;
+        waterCol = mix(waterCol, skyRefl, clamp(fres * 0.82, 0.0, 0.84));
 
-        // Sun glitter highlights on capillary facets
+        // GGX physical sun glitter path (WaterThreeJS Ocean.js dggx)
         vec3 Hw = normalize(Lw + Vw);
-        float NdotH = max(dot(Nworld, Hw), 0.0);
-        float sunElev = smoothstep(-0.04, 0.18, Lw.y);
-        float glitter = pow(NdotH, mix(140.0, 42.0, rFar)) * fres * 1.35 * sunElev * (1.0 - uSquallMix * 0.75);
-        waterCol += vec3(1.0, 0.95, 0.84) * min(glitter, 1.4);
+        float rough = clamp(0.055 + uSquallMix * 0.065 + (1.0 - detFade) * 0.095, 0.03, 0.42);
+        float ggxD = dggx(max(dot(Nworld, Hw), 0.0), rough * rough);
+        float fh = fresnelF(max(dot(Hw, Vw), 0.0), 0.02);
+        float sunNoL = max(dot(vWaveSlope, Lw), 0.0);
+        vec3 glint = vec3(1.0, 0.94, 0.82) * ggxD * fh * sunNoL * 2.4 * sunElev * (1.0 - uSquallMix * 0.82);
+        waterCol += min(glint, vec3(1.5));
 
-        // Jacobian crest compression + multi-scale cellular & FBM foam whitecaps
-        vec4 fN = texture2D(uFoamMap, vSeaUv * 0.042 + vec2(uTime * 0.008, -uTime * 0.006));
-        float capN = texture2D(uFoamMap, vSeaUv * 0.017 - vec2(uTime * 0.004, uTime * 0.005)).r;
-        float seaStorm = clamp((uWaveHeight - 0.75) / 2.2 + uSquallMix * 0.45, 0.0, 1.0);
-        float jacThresh = mix(0.32, 0.78, seaStorm);
-        float crestMask = smoothstep(jacThresh, jacThresh - 0.28, vJac) * smoothstep(0.12, 0.55, seaStorm);
-        float capGate = smoothstep(0.55 - seaStorm * 0.22, 0.85 - seaStorm * 0.18, fN.a * 0.55 + capN * 0.65);
-        float lacyFoam = crestMask * capGate * fN.g;
-        float fairFlecks = smoothstep(0.76, 0.98, vWaveCrest) * smoothstep(0.58, 0.88, fN.r) * fN.g * 0.35;
+        // Wind-streaked 3-scale layered foam & Jacobian whitecaps (WaterThreeJS + drift)
+        vec2 wperp = vec2(-uWindDir.y, uWindDir.x);
+        vec2 fflow = uWindDir * uTime * 0.018;
+        vec2 sp = vec2(dot(vSeaUv, uWindDir), dot(vSeaUv, wperp) * 2.5);
+        float tCoarse = texture2D(uFoamMap, sp * 0.014 + fflow).a;
+        float tMid = texture2D(uFoamMap, vSeaUv * 0.044 - fflow * 1.3).g;
+        float tFine = texture2D(uFoamMap, vSeaUv * 0.115 + fflow * 0.7).b;
+        float foamTex = tCoarse * 0.54 + tMid * 0.32 + tFine * 0.14;
 
-        // Subtle hull waterline bow/quarter foam collar outside hull
+        float seaStorm = clamp((uWaveHeight - 0.55) / 2.2 + uSquallMix * 0.45, 0.0, 1.0);
+        float jacThresh = mix(0.28, 0.58, seaStorm);
+        float breakE = smoothstep(jacThresh, jacThresh - 0.28, vJac) * (0.20 + 0.65 * seaStorm);
+        float crestE = smoothstep(mix(0.86, 0.72, seaStorm), 1.02, vWaveCrest) * (0.22 + 0.55 * seaStorm);
+
+        // Bow collar & trailing hull wake capsule along waterline
         float collarDist = abs(bPos.x) - hullHw;
         float hullCollar = 0.0;
-        if (bt > -0.02 && bt < 1.03 && collarDist >= -0.05 && collarDist < 0.65 && abs(bPos.y - 0.08 * uBoatHull.z) < 0.42) {
-          float falloff = (1.0 - smoothstep(0.0, 0.65, max(0.0, collarDist)));
-          float bowBoost = smoothstep(0.45, 0.0, bt) * 0.45 + 0.45;
-          hullCollar = falloff * bowBoost * (0.45 + 0.55 * fN.g);
+        if (bt > -0.02 && bt < 1.08 && collarDist >= -0.04 && collarDist < 0.58 && abs(bPos.y - 0.08 * uBoatHull.z) < 0.42) {
+          float falloff = 1.0 - smoothstep(0.0, 0.58, max(0.0, collarDist));
+          float bowBoost = smoothstep(0.38, 0.0, bt) * 0.42 + (bt > 0.78 ? 0.36 : 0.22);
+          hullCollar = falloff * bowBoost * (0.45 + 0.55 * tMid);
         }
 
-        vec3 foamCol = mix(vec3(0.89, 0.95, 0.98), vec3(0.72, 0.79, 0.85), uSquallMix * 0.55);
-        // Forward V-wave and narrow quarter wake brighten as the hull gathers way.
-        float speedWake = smoothstep(0.35, 5.0, uBoatSpeed);
-        float bowDist = max(0.0, -bPos.z - uBoatHull.x * 0.48);
-        float bowWidth = hullHw + bowDist * 0.34;
-        float bowLine = 1.0 - smoothstep(0.12, 0.58, abs(abs(bPos.x) - bowWidth));
-        float bowWake = bowLine * exp(-bowDist / max(1.0, uBoatHull.x * 0.55)) * step(0.01, bowDist);
-        float sternDist = max(0.0, bPos.z - uBoatHull.x * 0.48);
-        float sternWidth = uBoatHull.y * 0.5 + sternDist * 0.12;
-        float sternLine = 1.0 - smoothstep(0.10, 0.48, abs(abs(bPos.x) - sternWidth));
-        float sternWake = sternLine * exp(-sternDist / 15.0) * step(0.01, sternDist);
-        float boatWash = speedWake * (bowWake * 0.42 + sternWake * 0.22) * (0.55 + fN.g * 0.45);
-        float totalFoam = clamp(lacyFoam * 1.15 + fairFlecks + hullCollar * 0.68 + boatWash, 0.0, 0.92);
+        float foamEnergy = clamp(breakE * 0.92 + crestE * 0.62 + hullCollar * 0.68, 0.0, 0.85);
+        float foamThr = 1.0 - foamEnergy * 0.76;
+        float foamMask = smoothstep(foamThr - 0.14, foamThr + 0.16, foamTex) * smoothstep(0.04, 0.22, foamEnergy);
+        float freshCap = smoothstep(0.66, 0.96, tMid) * smoothstep(0.42, 0.88, breakE + hullCollar * 0.75);
+        float totalFoam = clamp(max(foamMask, freshCap), 0.0, 0.88);
+
+        float foamLight = 0.56 + 0.44 * max(dot(vWaveSlope, Lw), 0.0);
+        vec3 foamCol = mix(vec3(0.88, 0.95, 0.98), vec3(0.68, 0.76, 0.83), uSquallMix * 0.55) * foamLight;
         diffuseColor.rgb = mix(waterCol, foamCol, totalFoam);
         `,
       );
@@ -739,7 +725,33 @@ export class SailingSceneController {
     this.disposables.push(oceanGeo, oceanMat);
     const oceanMesh = new THREE.Mesh(oceanGeo, oceanMat);
     oceanMesh.receiveShadow = !this.isSoftwareGl;
+    oceanMesh.frustumCulled = false;
     scene.add(oceanMesh);
+    this.standardOceanMesh = oceanMesh;
+
+    // WebGL2-only Ultra Water tier + startup frame-time benchmark setup
+    this.webgl2UltraSupported = isWebGL2UltraWaterSupported(renderer);
+    this.oceanPreference = callbacks.initialOceanPreference ?? 'auto';
+    if (this.webgl2UltraSupported && this.oceanPreference !== 'standard') {
+      this.ensureUltraOceanCreated();
+    }
+    if (!this.webgl2UltraSupported) {
+      this.autoSelectedTier = 'standard';
+      this.benchmarkComplete = true;
+      this.activeOceanTier = 'standard';
+    } else if (this.oceanPreference === 'auto') {
+      // Begin startup frame-time benchmark using Ultra Water so GPU/CPU load is measured live
+      this.autoSelectedTier = 'ultra';
+      this.activeOceanTier = 'ultra';
+      this.benchmarkComplete = false;
+      this.benchmarkStartMs = performance.now();
+    } else {
+      this.autoSelectedTier = this.oceanPreference;
+      this.benchmarkComplete = true;
+      this.activeOceanTier = resolveOceanTier(this.oceanPreference, this.autoSelectedTier, this.webgl2UltraSupported);
+    }
+    this.syncOceanTierVisibility();
+    this.emitOceanStats(true);
 
     // Islands & Distant Harbor Vessels
     this.departureIsland = createIslandGroup(1.2, this.isSoftwareGl, true);
@@ -912,6 +924,27 @@ export class SailingSceneController {
     }
   }
 
+  public setOrbitAngles(yawRad: number, pitchRad: number, dist?: number, snap = true): void {
+    this.orbitYaw = yawRad;
+    this.orbitPitch = THREE.MathUtils.clamp(pitchRad, 0.06, 1.15);
+    if (typeof dist === 'number') {
+      this.orbitDist = THREE.MathUtils.clamp(dist, 7.5, 36);
+    }
+    if (snap) {
+      const state = this.callbacks.getState();
+      const hRad = (state.headingDeg * Math.PI) / 180;
+      const totalYaw = -hRad + this.orbitYaw;
+      const distScale = Math.max(1.0, this.boat.hullScaleFactor * 0.92);
+      const camDist = this.orbitDist * distScale;
+      const horiz = Math.cos(this.orbitPitch) * camDist;
+      const vert = Math.sin(this.orbitPitch) * camDist + 1.9;
+      this.camPosCurrent.set(Math.sin(totalYaw) * horiz, vert, Math.cos(totalYaw) * horiz);
+      this.camLookCurrent.set(0, 2.55 * Math.max(1.0, this.boat.hullScaleFactor * 0.85), 0);
+      this.camera.position.copy(this.camPosCurrent);
+      this.camera.lookAt(this.camLookCurrent);
+    }
+  }
+
   private onResize = (): void => {
     if (this.disposed) return;
     const w = this.container.clientWidth || window.innerWidth;
@@ -948,11 +981,22 @@ export class SailingSceneController {
   }
 
   private swapBoatIfNeeded(state: SimulationState): void {
-    if (state.boatId === this.currentBoatId) return;
+    if (
+      state.boatId === this.currentBoatId &&
+      state.exteriorModelId === this.currentExteriorModelId
+    ) {
+      return;
+    }
     this.scene.remove(this.boat.root);
     this.boat.dispose();
     this.currentBoatId = state.boatId;
-    this.boat = buildSailboatModel(this.currentBoatId, this.textures, this.isSoftwareGl);
+    this.currentExteriorModelId = state.exteriorModelId;
+    this.boat = buildSailboatModel(
+      this.currentBoatId,
+      this.textures,
+      this.isSoftwareGl,
+      this.currentExteriorModelId,
+    );
     this.scene.add(this.boat.root);
   }
 
@@ -972,8 +1016,10 @@ export class SailingSceneController {
 
     const skyUniforms = this.sky.material.uniforms;
     skyUniforms['sunPosition'].value.copy(_v1);
-    skyUniforms['turbidity'].value = THREE.MathUtils.lerp(2.2, 10.5, squallMix);
-    skyUniforms['rayleigh'].value = THREE.MathUtils.lerp(1.9, 0.45, squallMix);
+    skyUniforms['turbidity'].value = THREE.MathUtils.lerp(1.8, 9.5, squallMix);
+    skyUniforms['rayleigh'].value = THREE.MathUtils.lerp(2.2, 0.52, squallMix);
+    skyUniforms['mieCoefficient'].value = THREE.MathUtils.lerp(0.0022, 0.006, squallMix);
+    skyUniforms['mieDirectionalG'].value = 0.72;
 
     // Toggle Sky vs Starfield at night
     const nightWeight = THREE.MathUtils.clamp((0.22 - daylight) / 0.22, 0, 1);
@@ -1001,10 +1047,11 @@ export class SailingSceneController {
 
     // Ocean wave uniforms + depth coastal shoal color + sky reflection colors + boat hull exclusion
     const shoalMix = THREE.MathUtils.clamp(1 - (state.passage.depthM - 4) / 36, 0, 1);
+    const windRad = THREE.MathUtils.degToRad(state.weather.trueWindDirDeg);
     this.oceanUniforms.uTime.value = this.elapsedSec;
     this.oceanUniforms.uWaveHeight.value = state.weather.waveHeightM;
-    this.oceanUniforms.uBoatSpeed.value = state.boatSpeedKts;
     this.oceanUniforms.uOffset.value.set(state.passage.xNm * 60, state.passage.zNm * 60);
+    this.oceanUniforms.uWindDir.value.set(Math.sin(windRad), -Math.cos(windRad));
     this.oceanUniforms.uShoalMix.value = shoalMix;
     this.oceanUniforms.uSquallMix.value = squallMix;
     this.oceanUniforms.uSunDir.value.copy(_v1).normalize();
@@ -1051,8 +1098,6 @@ export class SailingSceneController {
   private updateParticles(state: SimulationState, dt: number): void {
     const hRad = (state.headingDeg * Math.PI) / 180;
     const sternDist = this.boat.deckLengthM * 0.49;
-    const waveOffsetX = state.passage.xNm * 60;
-    const waveOffsetZ = state.passage.zNm * 60;
 
     // 1. Stern Kelvin Wake Foam
     if (state.boatSpeedKts > 0.6 && Math.random() < 0.78) {
@@ -1065,21 +1110,19 @@ export class SailingSceneController {
     }
 
     const driftSpeed = state.boatSpeedKts * 0.52;
+    const waveScale = THREE.MathUtils.clamp(state.weather.waveHeightM, 0.25, 3.6) * 0.48;
+    const offX = state.passage.xNm * 60;
+    const offZ = state.passage.zNm * 60;
     for (let i = 0; i < 42; i++) {
       if (this.wakeLife[i] > 0) {
         this.wakeLife[i] = Math.max(0, this.wakeLife[i] - dt * 0.45);
         this.wakePos[i * 3] -= Math.sin(hRad) * driftSpeed * dt;
         this.wakePos[i * 3 + 2] += Math.cos(hRad) * driftSpeed * dt;
-        const s = (1.6 - this.wakeLife[i] * 0.8) * 1.45;
-        const wakeY = sampleGerstnerHeightAt(
-          this.elapsedSec,
-          this.wakePos[i * 3],
-          this.wakePos[i * 3 + 2],
-          waveOffsetX,
-          waveOffsetZ,
-          state.weather.waveHeightM,
-        ) + 0.035;
-        _mat4.makeTranslation(this.wakePos[i * 3], wakeY, this.wakePos[i * 3 + 2]);
+        const wx = this.wakePos[i * 3];
+        const wz = this.wakePos[i * 3 + 2];
+        const wy = sampleSpectralHeight(offX + wx, offZ + wz, this.elapsedSec, waveScale) + 0.07;
+        const s = (1.3 - this.wakeLife[i] * 0.65) * 1.15;
+        _mat4.makeTranslation(wx, wy, wz);
         _mat4.scale(_v1.set(s * this.wakeLife[i], 1, s * this.wakeLife[i]));
       } else {
         _mat4.makeScale(0, 0, 0);
@@ -1100,15 +1143,8 @@ export class SailingSceneController {
       const latX = Math.cos(hRad) * side;
       const latZ = Math.sin(hRad) * side;
       this.sprayPos[idx * 3] = bowX + latX * 0.25;
+      this.sprayPos[idx * 3 + 1] = 0.35;
       this.sprayPos[idx * 3 + 2] = bowZ + latZ * 0.25;
-      this.sprayPos[idx * 3 + 1] = sampleGerstnerHeightAt(
-        this.elapsedSec,
-        this.sprayPos[idx * 3],
-        this.sprayPos[idx * 3 + 2],
-        waveOffsetX,
-        waveOffsetZ,
-        state.weather.waveHeightM,
-      ) + 0.35;
       this.sprayVel[idx * 3] = latX * (1.2 + Math.random() * 1.1) - Math.sin(hRad) * 1.4;
       this.sprayVel[idx * 3 + 1] = 1.6 + Math.random() * 1.5;
       this.sprayVel[idx * 3 + 2] = latZ * (1.2 + Math.random() * 1.1) + Math.cos(hRad) * 1.4;
@@ -1123,7 +1159,7 @@ export class SailingSceneController {
         this.sprayPos[i * 3 + 1] += this.sprayVel[i * 3 + 1] * dt;
         this.sprayPos[i * 3 + 2] += this.sprayVel[i * 3 + 2] * dt;
         const sc = (0.4 + (1 - this.sprayLife[i]) * 1.1) * this.sprayLife[i];
-        _mat4.makeTranslation(this.sprayPos[i * 3], this.sprayPos[i * 3 + 1], this.sprayPos[i * 3 + 2]);
+        _mat4.makeTranslation(this.sprayPos[i * 3], Math.max(0.05, this.sprayPos[i * 3 + 1]), this.sprayPos[i * 3 + 2]);
         _mat4.scale(_v1.set(sc, sc, sc));
       } else {
         _mat4.makeScale(0, 0, 0);
@@ -1186,6 +1222,21 @@ export class SailingSceneController {
     const dampAlpha = 1 - Math.exp(-8.5 * camDt);
     const fpDampAlpha = modeChanged && mode === 'first-person-cabin' ? 1.0 : 1 - Math.exp(-12.5 * camDt);
 
+    // Natural human cockpit peripheral FOV in 1st-person helm/cabin vs 54° 3rd-person chase
+    const targetFov =
+      screen === 'playing' && mode === 'first-person-helm'
+        ? 64
+        : screen === 'playing' && mode === 'first-person-cabin'
+          ? 58
+          : 54;
+    if (Math.abs(this.camera.fov - targetFov) > 0.05) {
+      this.camera.fov = THREE.MathUtils.lerp(this.camera.fov, targetFov, dampAlpha);
+      if (Math.abs(this.camera.fov - targetFov) <= 0.08) {
+        this.camera.fov = targetFov;
+      }
+      this.camera.updateProjectionMatrix();
+    }
+
     if (screen === 'title') {
       const angle = 0.38 + Math.sin(this.elapsedSec * 0.18) * 0.25;
       const dist = 12.5 + this.boat.deckLengthM * 0.72;
@@ -1225,17 +1276,108 @@ export class SailingSceneController {
       return;
     }
 
-    // 3rd-person orbit chase camera behind stern quarter
+    // 3rd-person orbit chase camera behind stern quarter (framed cleanly so full masthead & hull sit in viewport)
     const hRad = (state.headingDeg * Math.PI) / 180;
     const totalYaw = -hRad + this.orbitYaw;
-    const horiz = Math.cos(this.orbitPitch) * this.orbitDist;
-    const vert = Math.sin(this.orbitPitch) * this.orbitDist + 1.6;
+    const distScale = Math.max(1.0, this.boat.hullScaleFactor * 0.92);
+    const camDist = this.orbitDist * distScale;
+    const horiz = Math.cos(this.orbitPitch) * camDist;
+    const vert = Math.sin(this.orbitPitch) * camDist + 1.9;
     _v1.set(Math.sin(totalYaw) * horiz, vert, Math.cos(totalYaw) * horiz);
-    _v2.set(0, 1.8, 0);
+    _v2.set(0, 2.55 * Math.max(1.0, this.boat.hullScaleFactor * 0.85), 0);
     this.camPosCurrent.lerp(_v1, dampAlpha);
     this.camLookCurrent.lerp(_v2, dampAlpha);
     this.camera.position.copy(this.camPosCurrent);
     this.camera.lookAt(this.camLookCurrent);
+  }
+
+  private ensureUltraOceanCreated(): boolean {
+    if (this.ultraOcean) return true;
+    if (!this.webgl2UltraSupported) return false;
+    try {
+      this.ultraOcean = new UltraWaterOcean(this.renderer, this.isSoftwareGl);
+      this.scene.add(this.ultraOcean.mesh);
+      return true;
+    } catch (err) {
+      console.warn('Ultra Water initialization failed, falling back to Standard ocean:', err);
+      this.webgl2UltraSupported = false;
+      this.ultraOcean = null;
+      return false;
+    }
+  }
+
+  private syncOceanTierVisibility(): void {
+    const useUltra = this.activeOceanTier === 'ultra' && Boolean(this.ultraOcean);
+    this.standardOceanMesh.visible = !useUltra;
+    if (this.ultraOcean) {
+      this.ultraOcean.mesh.visible = useUltra;
+    }
+  }
+
+  public setOceanPreference(preference: OceanQualityPreference): void {
+    this.oceanPreference = preference;
+    if (preference === 'ultra' && this.webgl2UltraSupported) {
+      this.ensureUltraOceanCreated();
+    }
+    if (preference === 'auto' && !this.benchmarkComplete && this.webgl2UltraSupported) {
+      this.ensureUltraOceanCreated();
+      this.autoSelectedTier = 'ultra';
+    }
+    this.activeOceanTier = resolveOceanTier(
+      this.oceanPreference,
+      this.autoSelectedTier,
+      this.webgl2UltraSupported,
+    );
+    this.syncOceanTierVisibility();
+    this.emitOceanStats(true);
+  }
+
+  private emitOceanStats(force = false): void {
+    if (!this.callbacks.onOceanStats) return;
+    const now = performance.now();
+    if (!force && now - this.lastStatsEmitMs < 240) return;
+    this.lastStatsEmitMs = now;
+    const safeMs = Math.max(1, this.emaFrameMs);
+    this.callbacks.onOceanStats({
+      avgFrameMs: safeMs,
+      fps: Math.round(1000 / safeMs),
+      activeTier: this.activeOceanTier,
+      preference: this.oceanPreference,
+      benchmarkComplete: this.benchmarkComplete,
+      benchmarkSampleCount: this.benchmarkSamplesMs.length,
+      webgl2UltraSupported: this.webgl2UltraSupported,
+    });
+  }
+
+  private updateStartupBenchmark(rawDtMs: number, nowMs: number): void {
+    if (this.benchmarkComplete) return;
+    if (this.benchmarkWarmupFrames < 4) {
+      this.benchmarkWarmupFrames++;
+      return;
+    }
+    this.benchmarkSamplesMs.push(rawDtMs);
+    const elapsedBench = nowMs - this.benchmarkStartMs;
+    if (
+      this.benchmarkSamplesMs.length >= 16 ||
+      (this.benchmarkSamplesMs.length >= 5 && elapsedBench > 1400)
+    ) {
+      const evaluated = evaluateOceanTierFromFrameTimes(
+        this.benchmarkSamplesMs,
+        this.webgl2UltraSupported,
+      );
+      this.autoSelectedTier = evaluated.activeTier;
+      this.benchmarkComplete = true;
+      if (evaluated.avgFrameMs > 0) {
+        this.emaFrameMs = evaluated.avgFrameMs;
+      }
+      this.activeOceanTier = resolveOceanTier(
+        this.oceanPreference,
+        this.autoSelectedTier,
+        this.webgl2UltraSupported,
+      );
+      this.syncOceanTierVisibility();
+      this.emitOceanStats(true);
+    }
   }
 
   private afterDraw(cb: () => void): void {
@@ -1260,11 +1402,18 @@ export class SailingSceneController {
     const tick = () => {
       if (this.disposed) return;
       const nowMs = performance.now();
-      const rawDt = (nowMs - this.lastFrameMs) / 1000;
+      const rawDtMs = Math.max(0.5, nowMs - this.lastFrameMs);
+      const rawDt = rawDtMs / 1000;
       this.lastFrameMs = nowMs;
       const dt = Math.min(Math.max(rawDt, 0.001), 0.05);
       const camDt = this.isSoftwareGl ? Math.min(Math.max(rawDt, 0.01), 0.45) : dt;
       this.elapsedSec += dt;
+
+      if (this.emaFrameMs <= 0) {
+        this.emaFrameMs = rawDtMs;
+      } else {
+        this.emaFrameMs = THREE.MathUtils.lerp(this.emaFrameMs, Math.min(rawDtMs, 250), 0.14);
+      }
 
       const screen = this.callbacks.getScreenState();
       if (screen === 'playing') {
@@ -1273,17 +1422,27 @@ export class SailingSceneController {
 
       const state = this.callbacks.getState();
       this.swapBoatIfNeeded(state);
-      const waveMotion = sampleGerstnerMotion(
+      const rawMotion = sampleGerstnerMotion(
         this.elapsedSec,
         state.passage.xNm * 60,
         state.passage.zNm * 60,
         state.weather.waveHeightM,
         state.headingDeg,
+        this.boat.hullLengthM * 0.42,
       );
-      syncBoatVisuals(this.boat, state, this.elapsedSec, waveMotion);
-      const cameraMode = this.callbacks.getCameraMode();
-      const atHelmOrCabin = cameraMode === 'first-person-helm' || cameraMode === 'first-person-cabin';
-      if ((atHelmOrCabin && nowMs - this.lastInstrumentRedrawMs > 280) || nowMs - this.lastInstrumentRedrawMs > 1200) {
+      this.smoothedHeave = THREE.MathUtils.damp(this.smoothedHeave, rawMotion.heaveM, 4.2, dt);
+      this.smoothedPitch = THREE.MathUtils.damp(this.smoothedPitch, rawMotion.pitchRad, 3.8, dt);
+      this.smoothedRoll = THREE.MathUtils.damp(this.smoothedRoll, rawMotion.rollRad, 3.4, dt);
+
+      syncBoatVisuals(this.boat, state, this.elapsedSec, {
+        heaveM: this.smoothedHeave,
+        pitchRad: this.smoothedPitch,
+        rollRad: this.smoothedRoll,
+      });
+      if (
+        (this.callbacks.getCameraMode() === 'first-person-cabin' && nowMs - this.lastInstrumentRedrawMs > 280) ||
+        nowMs - this.lastInstrumentRedrawMs > 1200
+      ) {
         this.lastInstrumentRedrawMs = nowMs;
         this.textures.updateCabinInstruments(state);
       }
@@ -1291,7 +1450,27 @@ export class SailingSceneController {
       this.updateParticles(state, dt);
       this.updateCamera(camDt, state);
 
+      if (this.activeOceanTier === 'ultra' && this.ultraOcean) {
+        const weatherParams = deriveUltraOceanWeatherParams(state.weather, state.passage.depthM);
+        const fogDensity =
+          this.scene.fog instanceof THREE.FogExp2 ? this.scene.fog.density : 0.00058;
+        this.ultraOcean.update(this.renderer, this.camera, dt, weatherParams, {
+          offsetX: state.passage.xNm * 60,
+          offsetZ: state.passage.zNm * 60,
+          sunDir: this.oceanUniforms.uSunDir.value,
+          sunColor: this.sunLight.color,
+          skyHorizon: this.oceanUniforms.uSkyHorizon.value,
+          skyZenith: this.oceanUniforms.uSkyZenith.value,
+          fogDensity,
+          exposure: this.renderer.toneMappingExposure,
+          boatInvMatrix: this.oceanUniforms.uBoatInvMatrix.value,
+          boatHull: this.oceanUniforms.uBoatHull.value,
+        });
+      }
+
       this.renderer.render(this.scene, this.camera);
+      this.updateStartupBenchmark(rawDtMs, nowMs);
+      this.emitOceanStats(false);
 
       if (this.isSoftwareGl) {
         this.afterDraw(tick);
@@ -1319,6 +1498,7 @@ export class SailingSceneController {
     dom.removeEventListener('wheel', this.onWheel);
     window.removeEventListener('resize', this.onResize);
 
+    this.ultraOcean?.dispose();
     this.boat.dispose();
     this.starfield.dispose();
     this.departureIsland.dispose();

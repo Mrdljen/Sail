@@ -23,4 +23,31 @@ This project ports specific algorithms and procedural ocean patterns from extern
 
 - By The Lee public repository identifies the root LICENSE as Apache-2.0. The latest HUD, cabin, and ocean presentation pass did not copy code from it.
 - The public mblode/tiller repository lists no LICENSE file and its README describes the project as private. No Tiller source was copied for the latest pass. Earlier Tiller-inspired simulation ports remain attributed above.
-- The CPU ocean sampler is an algorithm port of this project's own shader function: src/three/oceanScene.ts, evalWave, mirrored in evaluateGerstnerSurface. The implementation cites that source beside the port.
+- The CPU ocean sampler is an algorithm port of DRIFT's shared CPU/GPU Gerstner wave field. See the specific entry below.
+
+## Restored Ocean Renderer, Model Assets & Cabin Presentation (2026-11-28)
+
+1. **DRIFT (`christianpasinrey/drift`)**
+   - Source: https://github.com/christianpasinrey/drift
+   - License: **MIT**, Copyright 2026 Christian Pasín Rey (`LICENSE`).
+   - Ported algorithm: `js/waves.js` Gerstner spectrum and CPU surface sampler, adapted in `src/sim/oceanConfig.ts`. The renderer and CPU boat sampler share the same deterministic wave field.
+
+2. **Ultra-Water (`Humpalumps/Ultra-Water`)**
+   - Source: https://github.com/Humpalumps/Ultra-Water
+   - License: **MIT**, Copyright 2026 Humpalumps (`LICENSE`).
+   - Adapted module: `src/three/ultraWater.ts`, with upstream file references documented in that file's header.
+
+3. **Hash without Sine (`David Hoskins`)**
+   - Source: https://www.shadertoy.com/view/4djSRW
+   - License: **MIT**, as identified in `src/three/ultraWater.ts`.
+   - Adapted procedural hash used by the foam texture generator in `src/three/ultraWater.ts`.
+
+4. **J-80 Sailboat (`BoatUS Foundation`)**
+   - Source: https://sketchfab.com/boatusfoundation
+   - License recorded in the supplied original model metadata: **CC BY-NC-ND 4.0**.
+   - Existing assets: `public/models/j-80_sailboat.glb` and `public/models/j-80_sailboat (1).glb`. Runtime orientation and scale are applied by the renderer; the asset files are unchanged.
+
+5. **Sailboat (`Sergei` / `sergeif`)**
+   - Source: https://sketchfab.com/3d-models/sailboat-76d0b1e24be14d2f9a524bfce3001aeb
+   - License recorded in the supplied original model metadata: **CC BY 4.0**.
+   - Existing assets: `public/models/sailboat.glb` and `public/models/sailboat (1).glb`. Runtime orientation and scale are applied by the renderer; the asset files are unchanged.
