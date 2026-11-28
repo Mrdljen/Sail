@@ -27,6 +27,7 @@ import { buildNmeaSentences } from '../sim/nmea';
 import { getOptimalSheetPct, getRealismProfile } from '../sim/physics';
 import { toMarineInstrumentData } from '../sim/instrumentData';
 import { SailingInstrumentPanel } from './SailingInstrumentPanel';
+import { SailingLessonCard } from './SailingLessonCard';
 
 export type DockTab = 'helm' | 'weather' | 'cabin' | 'anchor';
 
@@ -258,6 +259,8 @@ export function SailingHUD({
           onSetAutopilot={onSetAutopilot}
         />
       </div>
+
+      <SailingLessonCard sim={sim} />
 
       {/* 3D Hover Tooltip */}
       {hoverTooltip && (
