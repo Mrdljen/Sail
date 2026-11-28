@@ -10,8 +10,9 @@ export interface MarineInstrumentData {
   navigation: {
     speedThroughWater: SignalKValue;
     speedOverGround: SignalKValue;
-    headingMagnetic: SignalKValue;
+    headingTrue: SignalKValue;
     courseOverGroundTrue: SignalKValue;
+    velocityMadeGoodToWaypoint: SignalKValue;
     attitude: { roll: number; pitch: number };
   };
   environment: {
@@ -36,6 +37,7 @@ export interface MarineInstrumentData {
     trueWindSpeedKts: number;
     apparentWindAngleDeg: number;
     apparentWindSpeedKts: number;
+    targetUpwindAngleDeg: number;
     mainsheetPct: number;
     jibsheetPct: number;
     rudderAngleDeg: number;
@@ -49,6 +51,7 @@ export interface MarineInstrumentData {
     toName: string;
     progress: number;
     distanceRemainingNm: number;
+    bearingToWaypointDeg: number;
     crossTrackNm: number;
     depthM: number;
     channelHazard: boolean;
@@ -73,16 +76,32 @@ function normalizeAngle180(degrees: number): number {
   return ((degrees + 540) % 360) - 180;
 }
 
+function normalizeAngle360(degrees: number): number {
+  return ((degrees % 360) + 360) % 360;
+}
+
+/** No-go clearance margin for a simple close-hauled target when no vessel polar is installed. */
+export const UPWIND_TARGET_MARGIN_DEG = 6;
+
 /** Adapt the simulation's single source of truth for the digital and cabin displays. */
 export function toMarineInstrumentData(state: SimulationState, noGoAngleDeg: number): MarineInstrumentData {
   const electrical = state.electrical;
   const trueWindAngleDeg = normalizeAngle180(state.weather.trueWindDirDeg - state.headingDeg);
+  const bearingToWaypointDeg = normalizeAngle360(
+    (Math.atan2(state.passage.totalDistanceNm - state.passage.xNm, state.passage.zNm) * 180) / Math.PI,
+  );
+  const vmgDeg = normalizeAngle180(state.cogDeg - bearingToWaypointDeg);
+  const targetUpwindAngleDeg = noGoAngleDeg + UPWIND_TARGET_MARGIN_DEG;
   return {
     navigation: {
       speedThroughWater: { value: state.boatSpeedKts, units: 'kn' },
       speedOverGround: { value: state.sogKts, units: 'kn' },
-      headingMagnetic: { value: degToRad(state.headingDeg), units: 'rad' },
+      headingTrue: { value: degToRad(state.headingDeg), units: 'rad' },
       courseOverGroundTrue: { value: degToRad(state.cogDeg), units: 'rad' },
+      velocityMadeGoodToWaypoint: {
+        value: state.sogKts * Math.cos(degToRad(vmgDeg)),
+        units: 'kn',
+      },
       attitude: { roll: degToRad(state.heelDeg), pitch: degToRad(state.pitchDeg) },
     },
     environment: {
@@ -117,6 +136,7 @@ export function toMarineInstrumentData(state: SimulationState, noGoAngleDeg: num
       trueWindSpeedKts: state.weather.trueWindSpeedKts,
       apparentWindAngleDeg: state.apparentWindAngleDeg,
       apparentWindSpeedKts: state.apparentWindSpeedKts,
+      targetUpwindAngleDeg,
       mainsheetPct: state.mainsheetPct,
       jibsheetPct: state.jibsheetPct,
       rudderAngleDeg: state.rudderAngleDeg,
@@ -130,6 +150,7 @@ export function toMarineInstrumentData(state: SimulationState, noGoAngleDeg: num
       toName: state.passage.toName,
       progress: Math.max(0, Math.min(1, state.passage.xNm / Math.max(1, state.passage.totalDistanceNm))),
       distanceRemainingNm: Math.max(0, state.passage.totalDistanceNm - state.passage.xNm),
+      bearingToWaypointDeg,
       crossTrackNm: state.passage.zNm,
       depthM: state.passage.depthM,
       channelHazard: state.passage.channelHazardWarning,

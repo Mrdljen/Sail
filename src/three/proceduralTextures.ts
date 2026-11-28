@@ -588,7 +588,16 @@ export function createProceduralTextures(maxAnisotropy: number): ProceduralTextu
       readout('HEADING', `${String(Math.round(instruments.sailing.headingDeg) % 360).padStart(3, '0')}°`, 174, 189, '#34d399');
       helmCtx.fillStyle = '#9fb2bf';
       helmCtx.font = '11px monospace';
-      helmCtx.fillText(`TWS ${instruments.sailing.trueWindSpeedKts.toFixed(1)} kt`, 16, 239);
+      helmCtx.fillText(
+        `TWS ${instruments.sailing.trueWindSpeedKts.toFixed(1)}  TWA ${Math.round(instruments.environment.wind.angleTrueWater.value * 180 / Math.PI)}° / ${Math.round(instruments.sailing.targetUpwindAngleDeg)}°`,
+        16,
+        235,
+      );
+      helmCtx.fillText(
+        `VMG ${instruments.navigation.velocityMadeGoodToWaypoint.value.toFixed(1)} kt  CTS ${String(Math.round(instruments.route.bearingToWaypointDeg) % 360).padStart(3, '0')}°`,
+        16,
+        251,
+      );
     } else {
       helmCtx.fillStyle = '#64748b';
       helmCtx.font = 'bold 16px monospace';

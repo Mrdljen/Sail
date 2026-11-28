@@ -19,6 +19,9 @@ interface DisplayValues {
   trueWind: number;
   speed: number;
   sog: number;
+  vmg: number;
+  bearing: number;
+  targetUpwindAngle: number;
   depth: number;
   battery: number;
   voltage: number;
@@ -94,6 +97,7 @@ function drawCanvas(
   data: MarineInstrumentData,
   speedHistory: number[],
   depthHistory: number[],
+  windTrendKts: number,
   now: number,
 ): void {
   ctx.clearRect(0, 0, WIDTH, HEIGHT);
@@ -176,6 +180,14 @@ function drawCanvas(
   ctx.lineTo(tx, ty);
   ctx.stroke();
   ctx.setLineDash([]);
+  const targetPort = polar(trueRad - (data.sailing.targetUpwindAngleDeg * Math.PI) / 180, wr - 13);
+  const targetStarboard = polar(trueRad + (data.sailing.targetUpwindAngleDeg * Math.PI) / 180, wr - 13);
+  ctx.fillStyle = '#a78bfa';
+  for (const [targetX, targetY] of [targetPort, targetStarboard]) {
+    ctx.beginPath();
+    ctx.arc(targetX, targetY, 3.2, 0, TAU);
+    ctx.fill();
+  }
   ctx.fillStyle = '#f1f5f9';
   ctx.beginPath();
   ctx.moveTo(0, -11);
@@ -192,6 +204,10 @@ function drawCanvas(
   ctx.fillText(`APP ${Math.round(values.apparentAngle)}°  ${values.apparentWind.toFixed(1)} kt`, 25, 238);
   ctx.fillStyle = '#45d4c0';
   ctx.fillText(`TRUE ${Math.round(values.trueAngle)}°  ${values.trueWind.toFixed(1)} kt`, 160, 238);
+  ctx.fillStyle = '#b5c4ce';
+  ctx.font = '10px ui-monospace, monospace';
+  ctx.fillText(`NO-GO ±${Math.round(data.sailing.noGoAngleDeg)}°   UPWIND TARGET ±${Math.round(values.targetUpwindAngle)}°`, 25, 253);
+  ctx.textAlign = 'left';
 
   // Compass card, rotating beneath a fixed lubber line
   drawCard(ctx, 307, 44, 176, 214);
@@ -220,6 +236,15 @@ function drawCanvas(
       ctx.fillText(['N', 'E', 'S', 'W'][d / 90], lx, ly);
     }
   }
+  const [bearingX, bearingY] = polar((values.bearing * Math.PI) / 180, cr - 2);
+  ctx.fillStyle = '#45d4c0';
+  ctx.beginPath();
+  ctx.moveTo(bearingX, bearingY - 5);
+  ctx.lineTo(bearingX + 5, bearingY);
+  ctx.lineTo(bearingX, bearingY + 5);
+  ctx.lineTo(bearingX - 5, bearingY);
+  ctx.closePath();
+  ctx.fill();
   ctx.restore();
   ctx.fillStyle = '#f59e0b';
   ctx.beginPath();
@@ -234,7 +259,7 @@ function drawCanvas(
   ctx.fillText(`${String(Math.round(values.heading) % 360).padStart(3, '0')}°`, cx, 226);
   ctx.fillStyle = '#8da4b4';
   ctx.font = '10px system-ui, sans-serif';
-  ctx.fillText('MAGNETIC HEADING', cx, 245);
+  ctx.fillText('HEADING  /  WAYPOINT BEARING', cx, 245);
 
   // Heel and pitch artificial horizon
   drawCard(ctx, 493, 44, 213, 214);
@@ -302,7 +327,10 @@ function drawCanvas(
   ctx.fillStyle = '#93a7b5';
   ctx.font = '12px ui-monospace, monospace';
   ctx.fillText(`SOG  ${values.sog.toFixed(1)} kt`, 139, 324);
-  drawSparkline(ctx, speedHistory, 28, 345, 193, 35, '#45d4c0');
+  ctx.fillStyle = '#45d4c0';
+  ctx.font = '10px ui-monospace, monospace';
+  ctx.fillText(`VMG ${values.vmg >= 0 ? '+' : ''}${values.vmg.toFixed(1)} kt  CTS ${String(Math.round(values.bearing) % 360).padStart(3, '0')}°`, 28, 343);
+  drawSparkline(ctx, speedHistory, 28, 350, 193, 29, '#45d4c0');
 
   ctx.fillStyle = '#9cb0be';
   ctx.font = '600 11px system-ui, sans-serif';
@@ -360,7 +388,7 @@ function drawCanvas(
   ctx.textAlign = 'left';
   ctx.fillText(`${data.route.fromName} → ${data.route.toName}`, 20, 411);
   ctx.textAlign = 'right';
-  ctx.fillText(`TWS ${values.trueWind.toFixed(1)} kt   SEA ${data.environment.water.waveHeight.value.toFixed(1)} m   AP ${data.sailing.autopilotMode.toUpperCase()}`, WIDTH - 20, 411);
+  ctx.fillText(`TWS ${values.trueWind.toFixed(1)} kt  ΔW ${windTrendKts >= 0 ? '+' : ''}${windTrendKts.toFixed(1)}/6s  SEA ${data.environment.water.waveHeight.value.toFixed(1)} m   AP ${data.sailing.autopilotMode.toUpperCase()}`, WIDTH - 20, 411);
   ctx.textAlign = 'left';
 
   if (!data.sailing.instrumentsPowered) {
@@ -405,6 +433,9 @@ export function SailingInstrumentPanel({
     trueWind: data.sailing.trueWindSpeedKts,
     speed: data.navigation.speedThroughWater.value,
     sog: data.navigation.speedOverGround.value,
+    vmg: data.navigation.velocityMadeGoodToWaypoint.value,
+    bearing: data.route.bearingToWaypointDeg,
+    targetUpwindAngle: data.sailing.targetUpwindAngleDeg,
     depth: data.environment.depth.belowTransducer.value,
     battery: data.electrical.batteries.house.capacity.stateOfCharge.value,
     voltage: data.electrical.batteries.house.voltage.value,
@@ -414,6 +445,8 @@ export function SailingInstrumentPanel({
   });
   const speedHistoryRef = useRef<number[]>([]);
   const depthHistoryRef = useRef<number[]>([]);
+  const windHistoryRef = useRef<number[]>([]);
+  const windTrendRef = useRef(0);
   const wheelDragRef = useRef<{ pointerId: number; lastX: number } | null>(null);
   dataRef.current = data;
 
@@ -438,6 +471,9 @@ export function SailingInstrumentPanel({
         trueWind: current.sailing.trueWindSpeedKts,
         speed: current.navigation.speedThroughWater.value,
         sog: current.navigation.speedOverGround.value,
+        vmg: current.navigation.velocityMadeGoodToWaypoint.value,
+        bearing: current.route.bearingToWaypointDeg,
+        targetUpwindAngle: current.sailing.targetUpwindAngleDeg,
         depth: current.environment.depth.belowTransducer.value,
         battery: current.electrical.batteries.house.capacity.stateOfCharge.value,
         voltage: current.electrical.batteries.house.voltage.value,
@@ -448,8 +484,9 @@ export function SailingInstrumentPanel({
       displayed.heading = lerpAngle(displayed.heading, target.heading, alpha);
       displayed.apparentAngle = lerpAngle(displayed.apparentAngle, target.apparentAngle, alpha);
       displayed.trueAngle = lerpAngle(displayed.trueAngle, target.trueAngle, alpha);
+      displayed.bearing = lerpAngle(displayed.bearing, target.bearing, alpha);
       (Object.keys(target) as Array<keyof DisplayValues>).forEach((key) => {
-        if (key !== 'heading' && key !== 'apparentAngle' && key !== 'trueAngle') {
+        if (key !== 'heading' && key !== 'apparentAngle' && key !== 'trueAngle' && key !== 'bearing') {
           displayed[key] += (target[key] - displayed[key]) * alpha;
         }
       });
@@ -457,6 +494,11 @@ export function SailingInstrumentPanel({
         lastHistory = now;
         speedHistoryRef.current.push(displayed.speed);
         depthHistoryRef.current.push(displayed.depth);
+        windHistoryRef.current.push(displayed.trueWind);
+        if (windHistoryRef.current.length > 12) windHistoryRef.current.shift();
+        if (windHistoryRef.current.length > 1) {
+          windTrendRef.current = windHistoryRef.current[windHistoryRef.current.length - 1] - windHistoryRef.current[0];
+        }
         if (speedHistoryRef.current.length > 42) speedHistoryRef.current.shift();
         if (depthHistoryRef.current.length > 42) depthHistoryRef.current.shift();
       }
@@ -470,7 +512,15 @@ export function SailingInstrumentPanel({
         canvas.height = pixelHeight;
       }
       ctx.setTransform(pixelWidth / WIDTH, 0, 0, pixelHeight / HEIGHT, 0, 0);
-      drawCanvas(ctx, displayed, current, speedHistoryRef.current, depthHistoryRef.current, now);
+      drawCanvas(
+        ctx,
+        displayed,
+        current,
+        speedHistoryRef.current,
+        depthHistoryRef.current,
+        windTrendRef.current,
+        now,
+      );
       frame = requestAnimationFrame(frameDraw);
     };
     frame = requestAnimationFrame(frameDraw);
